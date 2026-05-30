@@ -104,7 +104,7 @@ Stream Deck app ships — you don't install Node to *run* it.
 ### B. Build from source (any OS)
 
 ```bash
-git clone https://github.com/<you>/tokensaver-streamdeck.git
+git clone https://github.com/saeedkolivand/tokensaver-streamdeck.git
 cd tokensaver-streamdeck
 npm install
 npm run build        # bundles src/ -> com.tokensaver.dashboard.sdPlugin/bin/plugin.js
