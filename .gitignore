@@ -1,0 +1,5 @@
+node_modules/
+*.streamDeckPlugin
+com.tokensaver.dashboard.sdPlugin/logs/
+com.tokensaver.dashboard.sdPlugin/bin/*.map
+.DS_Store
