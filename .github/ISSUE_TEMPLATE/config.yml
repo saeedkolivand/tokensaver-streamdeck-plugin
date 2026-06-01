@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Troubleshooting (README)
+    url: https://github.com/saeedkolivand/tokensaver-streamdeck#troubleshooting
+    about: A key showing dashes or a negative Graphify number is often expected — check the Troubleshooting section first.
+  - name: How the numbers work
+    url: https://github.com/saeedkolivand/tokensaver-streamdeck#how-the-numbers-work-read-this
+    about: What's measured (RTK) vs estimated (Graphify, Total, Money) before filing a "wrong number" report.
+  - name: Questions & ideas
+    url: https://github.com/saeedkolivand/tokensaver-streamdeck/discussions
+    about: For open-ended questions or to float an idea before opening a formal request.

@@ -1,0 +1,88 @@
+name: Bug report
+description: A readout is wrong, missing, or not updating.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: dashes, a `≈` marker, or a **negative Graphify** value can be expected
+        (RTK/Graphify not installed yet, or queries haven't paid back the graph build).
+        See the README **Troubleshooting** and **How the numbers work** sections first.
+  - type: checkboxes
+    id: prereqs
+    attributes:
+      label: Prerequisites
+      options:
+        - label: I searched existing issues and didn't find a duplicate.
+          required: true
+        - label: I read "How the numbers work" and this is a real bug, not an estimate I misread.
+          required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+    validations:
+      required: true
+  - type: input
+    id: sd-version
+    attributes:
+      label: Stream Deck app version
+      placeholder: "6.5"
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: From manifest.json (e.g. 1.0.2.0).
+      placeholder: "1.0.2.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: readout
+    attributes:
+      label: Which readout is affected?
+      options:
+        - RTK
+        - GRAPHIFY
+        - TOTAL
+        - TODAY
+        - WEEK
+        - MONTH
+        - MONEY
+        - Multiple / all
+    validations:
+      required: true
+  - type: dropdown
+    id: tools
+    attributes:
+      label: Which tools are installed?
+      multiple: true
+      options:
+        - "RTK (rtk on PATH)"
+        - Graphify
+    validations:
+      required: false
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What does the key show, and what's wrong with it?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots / extra context
+      description: A photo of the key and anything else useful. If RTK is involved, the output of `rtk gain --all --format json` helps.
+    validations:
+      required: false
