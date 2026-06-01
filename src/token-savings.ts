@@ -152,11 +152,13 @@ export class TokenSavings extends SingletonAction<Settings> {
 				let sub: string;
 				if (g && g.queries > 0) {
 					value = showSigned(g.net, "≈");
-					sub = g.haveCost ? `net est · ${g.queries}q` : `est · ${g.queries}q`;
+					const proj = g.projects > 1 ? ` · ${g.projects}p` : "";
+					sub = (g.haveCost ? `net est · ${g.queries}q` : `est · ${g.queries}q`) + proj;
 				} else if (g && g.haveCost) {
 					// No query count yet -> show the real build cost honestly (it's a spend, not a saving).
 					value = "−" + formatCompact(g.spent);
-					sub = `spent · ${g.runs} run${g.runs === 1 ? "" : "s"}`;
+					const proj = g.projects > 1 ? ` · ${g.projects}p` : "";
+					sub = `spent · ${g.runs} run${g.runs === 1 ? "" : "s"}${proj}`;
 				} else {
 					value = "~0";
 					sub = "no queries yet";

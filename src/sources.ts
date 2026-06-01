@@ -19,11 +19,12 @@ export type GfyResult = {
 	ok: boolean;
 	net: number; // grossEst - spent (what we headline)
 	grossEst: number; // queries * perQuery (ESTIMATE)
-	spent: number; // real, from cost.json (total_input + total_output)
+	spent: number; // real, summed across every project's cost.json (total_input + total_output)
 	queries: number;
-	runs: number; // real, number of graph builds/updates in cost.json
+	runs: number; // real, number of graph builds/updates summed across all cost.json
 	perQuery: number;
-	haveCost: boolean; // whether cost.json was found and read
+	haveCost: boolean; // whether at least one cost.json was found and read
+	projects: number; // number of distinct project cost.json files summed
 };
 
 /**
@@ -93,8 +94,10 @@ export async function readRtk(base: string): Promise<RtkResult> {
  *    (~123k raw vs ~1.7k against the graph). `queries` comes from the stats file the
  *    `track-graphify` hook maintains (`{ "queries": N, "costPath": "..." }`) or a manual value.
  *
- * The stats file may also carry `costPath` (stamped by the hook), so when no explicit cost path is
- * configured the plugin still finds the project's real spend automatically.
+ * The stats file also carries `costPaths` (one cost.json per project, stamped by the hook), so when
+ * no explicit cost path is configured the plugin finds and **sums** every project's real spend
+ * automatically — true multi-project aggregation. (`costPath`, the single last-project field from
+ * older files, is still honored as a fallback.)
  *
  * net = grossEst - spent. Negative until queries pay back the build, which is the honest picture.
  */
@@ -102,58 +105,77 @@ export async function readGraphify(opts: {
 	perQuery: number;
 	fallbackQueries: number;
 	statsPath?: string;
-	costPath?: string; // explicit path to cost.json (or the graphify-out folder); overrides the stamped one
+	costPath?: string; // explicit path to cost.json (or the graphify-out folder); overrides the stamped ones
 }): Promise<GfyResult> {
-	// --- stats file: query count (+ optional costPath the hook stamped) ---
+	// --- stats file: query count (+ the per-project cost paths the hook recorded) ---
 	let queries = Math.max(0, Math.floor(opts.fallbackQueries || 0));
-	let statsCostPath: string | undefined;
+	let statsCostPaths: string[] = [];
 	if (opts.statsPath) {
 		try {
 			const raw = await readFile(expandHome(opts.statsPath), "utf8");
-			const j = JSON.parse(raw) as { queries?: unknown; costPath?: unknown };
+			const j = JSON.parse(raw) as { queries?: unknown; costPath?: unknown; costPaths?: unknown };
 			if (typeof j.queries === "number" && Number.isFinite(j.queries)) {
 				queries = Math.max(0, Math.floor(j.queries));
 			}
-			if (typeof j.costPath === "string" && j.costPath.trim()) {
-				statsCostPath = j.costPath.trim();
+			if (Array.isArray(j.costPaths)) {
+				statsCostPaths = j.costPaths.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
+			}
+			if (statsCostPaths.length === 0 && typeof j.costPath === "string" && j.costPath.trim()) {
+				statsCostPaths = [j.costPath.trim()]; // older single-path files
 			}
 		} catch {
 			/* missing/invalid -> manual count */
 		}
 	}
 
-	// --- real spend from cost.json (explicit path wins, else the one the hook stamped) ---
-	const effectiveCostPath = (opts.costPath ?? "").trim() || statsCostPath;
+	// --- real spend: explicit override wins; otherwise sum every project's cost.json ---
+	const costList = (opts.costPath ?? "").trim() ? [opts.costPath!.trim()] : statsCostPaths;
 	let spent = 0;
 	let runs = 0;
-	let haveCost = false;
-	if (effectiveCostPath) {
-		try {
-			let p = expandHome(effectiveCostPath);
-			if (!/cost\.json$/i.test(p)) p = join(p, "cost.json"); // allow pointing at graphify-out/
-			const j = JSON.parse(await readFile(p, "utf8")) as {
-				total_input_tokens?: unknown;
-				total_output_tokens?: unknown;
-				runs?: Array<{ input_tokens?: unknown; output_tokens?: unknown }>;
-			};
-			let ti = Number(j.total_input_tokens);
-			let to = Number(j.total_output_tokens);
-			runs = Array.isArray(j.runs) ? j.runs.length : 0;
-			// fall back to summing runs if the totals are missing
-			if (!Number.isFinite(ti) || !Number.isFinite(to)) {
-				ti = (j.runs ?? []).reduce((s, r) => s + (Number(r.input_tokens) || 0), 0);
-				to = (j.runs ?? []).reduce((s, r) => s + (Number(r.output_tokens) || 0), 0);
-			}
-			spent = (Number.isFinite(ti) ? ti : 0) + (Number.isFinite(to) ? to : 0);
-			haveCost = true;
-		} catch {
-			/* missing/invalid cost.json -> spent stays 0 */
+	let projects = 0;
+	const seen = new Set<string>();
+	const winFs = process.platform === "win32"; // case-insensitive paths only on Windows
+	for (const raw of costList) {
+		let p = expandHome(raw);
+		if (!/cost\.json$/i.test(p)) p = join(p, "cost.json"); // allow pointing at graphify-out/
+		const norm = p.replace(/\\/g, "/");
+		const k = winFs ? norm.toLowerCase() : norm;
+		if (seen.has(k)) continue; // never double-count a project
+		seen.add(k);
+		const c = await readCostFile(p);
+		if (c.ok) {
+			spent += c.spent;
+			runs += c.runs;
+			projects += 1;
 		}
 	}
 
 	const pq = opts.perQuery > 0 ? opts.perQuery : 121_300;
 	const grossEst = queries * pq;
-	return { ok: true, net: grossEst - spent, grossEst, spent, queries, runs, perQuery: pq, haveCost };
+	return { ok: true, net: grossEst - spent, grossEst, spent, queries, runs, perQuery: pq, haveCost: projects > 0, projects };
+}
+
+/** Read one Graphify cost.json and return its spend + build-run count. */
+async function readCostFile(p: string): Promise<{ ok: boolean; spent: number; runs: number }> {
+	try {
+		const j = JSON.parse(await readFile(p, "utf8")) as {
+			total_input_tokens?: unknown;
+			total_output_tokens?: unknown;
+			runs?: Array<{ input_tokens?: unknown; output_tokens?: unknown }>;
+		};
+		let ti = Number(j.total_input_tokens);
+		let to = Number(j.total_output_tokens);
+		const runs = Array.isArray(j.runs) ? j.runs.length : 0;
+		// fall back to summing runs if the totals are missing
+		if (!Number.isFinite(ti) || !Number.isFinite(to)) {
+			ti = (j.runs ?? []).reduce((s, r) => s + (Number(r.input_tokens) || 0), 0);
+			to = (j.runs ?? []).reduce((s, r) => s + (Number(r.output_tokens) || 0), 0);
+		}
+		const spent = (Number.isFinite(ti) ? ti : 0) + (Number.isFinite(to) ? to : 0);
+		return { ok: true, spent, runs };
+	} catch {
+		return { ok: false, spent: 0, runs: 0 }; // missing/invalid cost.json -> skipped
+	}
 }
 
 /** Coerce an unknown (often from JSON) to a finite number, else 0. */

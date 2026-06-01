@@ -64,11 +64,12 @@ The whole point of this plugin is to be honest about what's measured vs estimate
   so the assistant traverses the graph instead of re-reading raw files. It logs what it **spent**
   (the LLM tokens used during extraction) in `graphify-out/cost.json`, but it **never logs the
   savings** — there's no per-query saving or query count anywhere in `graphify-out/`. So the plugin
-  ships a hook (`track-graphify.mjs`) that counts each real `graphify query` and stamps your
+  ships a hook (`track-graphify.mjs`) that counts each real `graphify query` and records each
   project's `cost.json` path automatically (see below). The Graphify readout is then
   **net = estimated savings − real cost**: `queries × tokens/query` (estimate, default `121300`
-  from the ~123k → ~1.7k benchmark) minus what `cost.json` says you spent. It's negative until
-  queries pay back the build, which is the honest picture.
+  from the ~123k → ~1.7k benchmark) minus what `cost.json` says you spent, **summed across every
+  project you query**. It's negative until queries pay back the build, which is the honest picture.
+  When more than one project is in play the sub-label shows a `· Np` project count.
 
 - **Total and Money are approximate.** **Total** = measured RTK + estimated Graphify net, and
   **Money** = those saved tokens × your `$ per 1M tokens` rate (default `$3`). Because they fold the
@@ -160,12 +161,14 @@ that you wire to a Claude Code [PreToolUse hook](https://code.claude.com/docs/en
 real `graphify query` / `graphify explain` / `graphify path` it:
 
 1. increments `queries` in `~/.tokensaver/graphify.json` (the file the plugin reads by default), and
-2. stamps that project's `graphify-out/cost.json` path into the same file —
+2. records that project's `graphify-out/cost.json` path into a `costPaths` list in the same file —
 
-so **both** Graphify path fields in the plugin fill in automatically. Counting actual graph lookups (not
-raw greps) is the honest proxy for "a query that replaced reading files," which is why the headline stays
-`≈`. The hook always exits `0`, so it can never block a tool call. (Build commands like
-`graphify update`/`extract` are a *cost*, already in `cost.json`, so they aren't counted.)
+so the plugin fills in both Graphify fields automatically. Because every project's `cost.json` is kept in
+the list (deduped), the plugin **sums the real build cost across all the projects you query** — true
+multi-project aggregation. Counting actual graph lookups (not raw greps) is the honest proxy for "a query
+that replaced reading files," which is why the headline stays `≈`. The hook always exits `0`, so it can
+never block a tool call. (Build commands like `graphify update`/`extract` are a *cost*, already in
+`cost.json`, so they aren't counted.)
 
 ### Install (macOS / Linux / Windows)
 
@@ -202,9 +205,17 @@ existing `Bash` hooks rather than overwriting them:
 }
 ```
 
-Use the absolute path for `PATH_TO` (forward slashes work on Windows too, e.g.
-`node "C:/Users/You/.tokensaver/track-graphify.mjs"`). That's it — leave the plugin's **Graphify stats
-file** and **Graphify out / cost.json** fields blank and they'll be filled in automatically.
+Use the **absolute** path for `PATH_TO` (hook commands don't expand `~`/`$HOME`):
+
+| OS | `command` |
+| --- | --- |
+| macOS / Linux | `node "/Users/you/.tokensaver/track-graphify.mjs"` |
+| Windows | `node "C:/Users/You/.tokensaver/track-graphify.mjs"` (forward slashes work in Node on Windows) |
+
+That's it — leave the plugin's **Graphify stats file** and **Graphify out / cost.json** fields blank and
+they'll be filled in automatically. The hook and plugin are fully cross-platform: paths, the home
+directory, and per-project dedup (case-insensitive on Windows, case-sensitive on macOS/Linux) are all
+handled for you.
 
 > **Split machines (WSL / remote):** the stats file must be readable by the machine running the Stream
 > Deck app. If Claude Code runs elsewhere, write the counter to a shared/synced path and point the
