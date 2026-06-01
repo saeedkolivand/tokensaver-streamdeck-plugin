@@ -10,9 +10,13 @@
 		<sdpi-item label="Mode">
 			<sdpi-select setting="mode" default="cycle">
 				<option value="cycle">Cycle on tap</option>
-				<option value="rtk">RTK only (measured)</option>
-				<option value="graphify">Graphify only (estimate)</option>
-				<option value="combined">Combined</option>
+				<option value="rtk">RTK total (measured)</option>
+				<option value="graphify">Graphify (estimate)</option>
+				<option value="total">Total (RTK + Graphify)</option>
+				<option value="today">Today (measured)</option>
+				<option value="week">This week (measured)</option>
+				<option value="month">This month (measured)</option>
+				<option value="money">Money saved (≈)</option>
 			</sdpi-select>
 		</sdpi-item>
 
@@ -24,43 +28,53 @@
 			<sdpi-range setting="pollSeconds" min="5" max="300" default="30" step="5" showlabels></sdpi-range>
 		</sdpi-item>
 
+		<sdpi-item label="$ per 1M tokens">
+			<sdpi-textfield setting="usdPerMTokens" type="number" default="3" placeholder="3"></sdpi-textfield>
+		</sdpi-item>
+
 		<hr />
 
 		<sdpi-item label="Graphify ~tokens/query">
 			<sdpi-textfield setting="gfyPerQuery" type="number" default="121300"></sdpi-textfield>
 		</sdpi-item>
 
+		<sdpi-item label="Graphify stats file">
+			<sdpi-textfield
+				setting="gfyStatsPath"
+				placeholder="~/.tokensaver/graphify.json (default — auto-tracked)"
+			></sdpi-textfield>
+		</sdpi-item>
+
 		<sdpi-item label="Graphify out / cost.json">
 			<sdpi-textfield
 				setting="gfyCostPath"
-				placeholder="…/your-project/graphify-out (or cost.json)"
+				placeholder="optional — auto-discovered from the stats file"
 			></sdpi-textfield>
 		</sdpi-item>
 
 		<sdpi-item label="Graphify queries">
-			<sdpi-textfield setting="gfyQueries" type="number" default="0" placeholder="0"></sdpi-textfield>
-		</sdpi-item>
-
-		<sdpi-item label="Graphify stats file">
-			<sdpi-textfield
-				setting="gfyStatsPath"
-				placeholder="~/.tokensaver/graphify.json (optional)"
-			></sdpi-textfield>
+			<sdpi-textfield setting="gfyQueries" type="number" default="0" placeholder="0 (fallback only)"></sdpi-textfield>
 		</sdpi-item>
 
 		<details style="margin-top: 10px">
 			<summary>About the numbers</summary>
 			<p style="font-size: 9pt; opacity: 0.8; line-height: 1.4">
-				<b>RTK</b> is measured — parsed from <code>rtk gain</code>, which RTK keeps in its own SQLite
-				ledger. <b>Graphify</b> is split: its <i>cost</i> is real (point "out / cost.json" at your
-				project's <code>graphify-out</code> folder — <code>cost.json</code> logs the tokens Graphify
-				<i>spent</i> building the graph), but its <i>savings</i> are an estimate, because Graphify
-				never records per-query savings or a query count. So the Graphify readout shows
+				<b>RTK is measured.</b> The plugin reads <code>rtk gain --all --format json</code>, so the
+				<b>RTK</b>, <b>Today</b>, <b>Week</b>, and <b>Month</b> readouts are real before/after token
+				counts from RTK's own ledger — not estimates.
+			</p>
+			<p style="font-size: 9pt; opacity: 0.8; line-height: 1.4">
+				<b>Graphify is auto-tracked but estimated.</b> Install the <code>track-graphify</code> hook (see
+				the README) and it counts each real <code>graphify query</code> into
+				<code>~/.tokensaver/graphify.json</code> and stamps your project's <code>cost.json</code> path —
+				so both fields above are filled in automatically. The Graphify readout is
 				<b>net = estimated savings − real cost</b>: queries &times; tokens/query (default 121,300, from
 				the ~123k&rarr;1.7k benchmark) minus what <code>cost.json</code> says you spent. It's negative
-				until queries pay back the build. With no query count set it just shows the real spend. Feed a
-				real count via a stats file containing <code>{ "queries": N }</code> (e.g. bumped from
-				Graphify's PreToolUse hook). The combined total mixes measured + estimated, so it's approximate.
+				until queries pay back the build.
+			</p>
+			<p style="font-size: 9pt; opacity: 0.8; line-height: 1.4">
+				<b>Total</b> and <b>Money</b> blend measured RTK with the Graphify estimate, so they're marked
+				<code>≈</code>. <b>Money</b> = saved tokens &times; <i>$ per 1M tokens</i> (default $3).
 			</p>
 		</details>
 	</body>

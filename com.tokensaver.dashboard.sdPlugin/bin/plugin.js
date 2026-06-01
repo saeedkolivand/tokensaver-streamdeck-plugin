@@ -9193,39 +9193,50 @@ typeof SuppressedError === "function" ? SuppressedError : function (error, suppr
 };
 
 const run = promisify(exec);
-const MULT = { K: 1e3, M: 1e6, B: 1e9, T: 1e12 };
-/** Expand a compact figure like "10.3M" / "1,234" into an absolute number. */
-function expand(num, suffix) {
-    const base = parseFloat(num.replace(/,/g, ""));
-    const m = suffix ? MULT[suffix.toUpperCase()] ?? 1 : 1;
-    return Math.round(base * m);
-}
 /**
- * Read RTK's own cumulative ledger by parsing `rtk gain`.
- * RTK measures real savings (it sees both the raw and compressed output and diffs them),
- * so this number is empirically grounded — not an estimate.
+ * Read RTK's measured ledger via `rtk gain --all --format json`.
+ * RTK sees both the raw and compressed command output and diffs them, so these are real measured
+ * savings — not estimates. The JSON gives a cumulative summary plus per-day / -week / -month
+ * breakdowns, which feed the Today / Week / Month readouts.
  *
- * If your rtk build exposes a structured flag (check `rtk gain --help`), point `command`
- * at it and parse JSON instead; or read RTK's SQLite DB directly for the exact integer.
+ * `base` defaults to "rtk gain"; we append `--all --format json` unless the user already specified a
+ * `--format` (e.g. they pointed this at a full binary path with their own flags).
  */
-async function readRtk(command) {
+async function readRtk(base) {
+    const empty = (error) => ({
+        ok: false,
+        totalSaved: 0,
+        today: 0,
+        week: 0,
+        month: 0,
+        avgPct: null,
+        error,
+    });
     try {
-        const { stdout } = await run(command, { timeout: 8000, windowsHide: true });
-        const saved = stdout.match(/Tokens saved:\s*([\d.,]+)\s*([KMBT]?)/i);
-        const pct = stdout.match(/Tokens saved:[^(\n]*\(\s*([\d.]+)\s*%\s*\)/i);
-        const cmds = stdout.match(/Total commands:\s*([\d.,]+)\s*([KMBT]?)/i);
-        if (!saved) {
-            return { ok: false, saved: 0, percent: null, commands: null, error: "Could not find 'Tokens saved:' in output" };
-        }
+        const cmd = /--format\b/.test(base) ? base : `${base} --all --format json`;
+        const { stdout } = await run(cmd, { timeout: 8000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+        const j = JSON.parse(stdout);
+        const ymd = localYMD();
+        const ym = localYM();
+        const daily = j.daily ?? [];
+        const weekly = j.weekly ?? [];
+        const monthly = j.monthly ?? [];
+        const today = numOf(daily.find((d) => d.date === ymd)?.saved_tokens);
+        const wk = weekly.find((w) => (w.week_start ?? "") <= ymd && ymd <= (w.week_end ?? "")) ?? weekly[weekly.length - 1];
+        const month = monthly.find((m) => m.month === ym);
         return {
             ok: true,
-            saved: expand(saved[1], saved[2] ?? ""),
-            percent: pct ? parseFloat(pct[1]) : null,
-            commands: cmds ? expand(cmds[1], cmds[2] ?? "") : null,
+            totalSaved: numOf(j.summary?.total_saved),
+            today,
+            week: numOf(wk?.saved_tokens),
+            month: numOf(month?.saved_tokens),
+            avgPct: Number.isFinite(Number(j.summary?.avg_savings_pct))
+                ? Math.round(Number(j.summary?.avg_savings_pct))
+                : null,
         };
     }
     catch (e) {
-        return { ok: false, saved: 0, percent: null, commands: null, error: e instanceof Error ? e.message : String(e) };
+        return empty(e instanceof Error ? e.message : String(e));
     }
 }
 /**
@@ -9235,16 +9246,20 @@ async function readRtk(command) {
  *    `graphify-out/cost.json` ({ total_input_tokens, total_output_tokens, runs:[...] }).
  *    This is a COST ledger — it is NOT savings.
  *
- *  - GROSS SAVINGS (estimate): Graphify never logs per-query savings or a query count, so
- *    the saved side is queries * perQuery, where perQuery defaults to the ~121.3k benchmark
- *    (~123k raw vs ~1.7k against the graph). `queries` comes from a stats file you maintain
- *    (`{ "queries": <n> }`, e.g. bumped from Graphify's PreToolUse hook) or a manual value.
+ *  - GROSS SAVINGS (estimate): Graphify never logs per-query savings or a query count, so the
+ *    saved side is queries * perQuery, where perQuery defaults to the ~121.3k benchmark
+ *    (~123k raw vs ~1.7k against the graph). `queries` comes from the stats file the
+ *    `track-graphify` hook maintains (`{ "queries": N, "costPath": "..." }`) or a manual value.
+ *
+ * The stats file may also carry `costPath` (stamped by the hook), so when no explicit cost path is
+ * configured the plugin still finds the project's real spend automatically.
  *
  * net = grossEst - spent. Negative until queries pay back the build, which is the honest picture.
  */
 async function readGraphify(opts) {
-    // --- query count (estimate input) ---
+    // --- stats file: query count (+ optional costPath the hook stamped) ---
     let queries = Math.max(0, Math.floor(opts.fallbackQueries || 0));
+    let statsCostPath;
     if (opts.statsPath) {
         try {
             const raw = await readFile(expandHome(opts.statsPath), "utf8");
@@ -9252,18 +9267,22 @@ async function readGraphify(opts) {
             if (typeof j.queries === "number" && Number.isFinite(j.queries)) {
                 queries = Math.max(0, Math.floor(j.queries));
             }
+            if (typeof j.costPath === "string" && j.costPath.trim()) {
+                statsCostPath = j.costPath.trim();
+            }
         }
         catch {
             /* missing/invalid -> manual count */
         }
     }
-    // --- real spend from cost.json ---
+    // --- real spend from cost.json (explicit path wins, else the one the hook stamped) ---
+    const effectiveCostPath = (opts.costPath ?? "").trim() || statsCostPath;
     let spent = 0;
     let runs = 0;
     let haveCost = false;
-    if (opts.costPath) {
+    if (effectiveCostPath) {
         try {
-            let p = expandHome(opts.costPath);
+            let p = expandHome(effectiveCostPath);
             if (!/cost\.json$/i.test(p))
                 p = join(p, "cost.json"); // allow pointing at graphify-out/
             const j = JSON.parse(await readFile(p, "utf8"));
@@ -9286,6 +9305,22 @@ async function readGraphify(opts) {
     const grossEst = queries * pq;
     return { ok: true, net: grossEst - spent, grossEst, spent, queries, runs, perQuery: pq, haveCost };
 }
+/** Coerce an unknown (often from JSON) to a finite number, else 0. */
+function numOf(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+}
+/** Local calendar date as YYYY-MM-DD (matches RTK's `daily[].date`). */
+function localYMD(d = new Date()) {
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+/** Local month as YYYY-MM (matches RTK's `monthly[].month`). */
+function localYM(d = new Date()) {
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+}
+function pad(n) {
+    return String(n).padStart(2, "0");
+}
 /** Expand a leading ~ to the user's home directory (cross-platform). */
 function expandHome(p) {
     return p.replace(/^~(?=[/\\]|$)/, process.env.HOME ?? process.env.USERPROFILE ?? "~");
@@ -9304,6 +9339,20 @@ function formatCompact(n) {
     if (abs >= 1e3)
         return trim(n / 1e3) + "K";
     return String(Math.round(n));
+}
+/** Format a USD amount for a tiny key, e.g. 72 -> "$72", 1234 -> "$1.2K", 0.42 -> "$0.42". */
+function formatMoney(usd) {
+    if (!Number.isFinite(usd))
+        return "—";
+    const neg = usd < 0 ? "−" : "";
+    const abs = Math.abs(usd);
+    if (abs >= 1e3)
+        return neg + "$" + formatCompact(abs);
+    if (abs >= 100)
+        return neg + "$" + Math.round(abs);
+    if (abs >= 1)
+        return neg + "$" + abs.toFixed(1).replace(/\.0$/, "");
+    return neg + "$" + abs.toFixed(2);
 }
 function trim(x) {
     const s = x >= 100 ? x.toFixed(0) : x >= 10 ? x.toFixed(1) : x.toFixed(2);
@@ -9345,8 +9394,19 @@ ${SHELL}
     return "data:image/svg+xml;base64," + Buffer.from(svg).toString("base64");
 }
 
-const ORDER = ["rtk", "graphify", "combined"];
-const COLOR = { rtk: "#34d399", graphify: "#fbbf24", combined: "#60a5fa", error: "#f87171" };
+const ORDER = ["rtk", "graphify", "total", "today", "week", "month", "money"];
+/** Default location the `track-graphify` hook writes the live query counter to. */
+const DEFAULT_STATS_PATH = "~/.tokensaver/graphify.json";
+const COLOR = {
+    rtk: "#34d399", // green  — measured
+    graphify: "#fbbf24", // amber  — estimate
+    total: "#60a5fa", // blue   — combined
+    today: "#a78bfa", // violet
+    week: "#f472b6", // pink
+    month: "#38bdf8", // sky
+    money: "#facc15", // gold
+    error: "#f87171", // red
+};
 let TokenSavings = (() => {
     let _classDecorators = [action({ UUID: "com.tokensaver.dashboard.savings" })];
     let _classDescriptor;
@@ -9401,61 +9461,90 @@ let TokenSavings = (() => {
         }
         view(id, s) {
             const m = s.mode ?? "cycle";
-            return m === "cycle" ? ORDER[this.cycle.get(id) ?? 0] : m;
+            if (m === "cycle")
+                return ORDER[this.cycle.get(id) ?? 0];
+            if (m === "combined")
+                return "total"; // back-compat with the old mode name
+            return m;
         }
         async refresh(a, s) {
             const cmd = (s.rtkCommand ?? "").trim() || "rtk gain";
             const perQuery = num(s.gfyPerQuery, 121_300) || 121_300;
             const queries = num(s.gfyQueries, 0);
-            const statsPath = (s.gfyStatsPath ?? "").trim() || undefined;
+            const statsPath = (s.gfyStatsPath ?? "").trim() || DEFAULT_STATS_PATH;
             const costPath = (s.gfyCostPath ?? "").trim() || undefined;
+            const usdPerM = num(s.usdPerMTokens, 3) || 3;
+            const money = (tokens) => (tokens * usdPerM) / 1e6;
             try {
                 const v = this.view(a.id, s);
-                if (v === "rtk") {
-                    const r = await readRtk(cmd);
-                    await a.setImage(r.ok
+                const needRtk = v === "rtk" || v === "total" || v === "today" || v === "week" || v === "month" || v === "money";
+                const needGfy = v === "graphify" || v === "total" || v === "money";
+                const r = needRtk ? await readRtk(cmd) : null;
+                const g = needGfy ? await readGraphify({ perQuery, fallbackQueries: queries, statsPath, costPath }) : null;
+                await a.setImage(this.face(v, r, g, money));
+                await a.setTitle(""); // the SVG carries all the text
+            }
+            catch {
+                await a.setImage(renderKey({ tag: "ERR", value: "!", sub: "see logs", color: COLOR.error }));
+            }
+        }
+        /** Build the SVG key face for the active readout. */
+        face(v, r, g, money) {
+            const total = (r?.ok ? r.totalSaved : 0) + (g?.net ?? 0);
+            switch (v) {
+                case "rtk":
+                    return r?.ok
                         ? renderKey({
                             tag: "RTK",
-                            value: formatCompact(r.saved),
-                            sub: r.percent != null ? `${r.percent}% saved` : "saved",
+                            value: formatCompact(r.totalSaved),
+                            sub: r.avgPct != null ? `${r.avgPct}% saved` : "saved",
                             color: COLOR.rtk,
                         })
-                        : renderKey({ tag: "RTK", value: "—", sub: "run rtk gain", color: COLOR.error }));
-                }
-                else if (v === "graphify") {
-                    const g = await readGraphify({ perQuery, fallbackQueries: queries, statsPath, costPath });
+                        : renderKey({ tag: "RTK", value: "—", sub: "run rtk gain", color: COLOR.error });
+                case "graphify": {
                     let value;
                     let sub;
-                    if (g.queries > 0) {
+                    if (g && g.queries > 0) {
                         value = showSigned(g.net, "≈");
                         sub = g.haveCost ? `net est · ${g.queries}q` : `est · ${g.queries}q`;
                     }
-                    else if (g.haveCost) {
+                    else if (g && g.haveCost) {
                         // No query count yet -> show the real build cost honestly (it's a spend, not a saving).
                         value = "−" + formatCompact(g.spent);
                         sub = `spent · ${g.runs} run${g.runs === 1 ? "" : "s"}`;
                     }
                     else {
                         value = "~0";
-                        sub = "set queries";
+                        sub = "no queries yet";
                     }
-                    await a.setImage(renderKey({ tag: "GRAPHIFY", value, sub, color: COLOR.graphify }));
+                    return renderKey({ tag: "GRAPHIFY", value, sub, color: COLOR.graphify });
                 }
-                else {
-                    const r = await readRtk(cmd);
-                    const g = await readGraphify({ perQuery, fallbackQueries: queries, statsPath, costPath });
-                    const total = (r.ok ? r.saved : 0) + g.net; // RTK measured + Graphify (est saved − real cost)
-                    await a.setImage(renderKey({
+                case "total":
+                    return renderKey({
                         tag: "TOTAL",
                         value: showSigned(total, "≈"),
-                        sub: r.ok ? "measured+est" : "graphify only",
-                        color: COLOR.combined,
-                    }));
-                }
-                await a.setTitle(""); // the SVG carries all the text
-            }
-            catch {
-                await a.setImage(renderKey({ tag: "ERR", value: "!", sub: "see logs", color: COLOR.error }));
+                        sub: r?.ok ? "measured+est" : "graphify only",
+                        color: COLOR.total,
+                    });
+                case "today":
+                    return r?.ok
+                        ? renderKey({ tag: "TODAY", value: formatCompact(r.today), sub: "saved today", color: COLOR.today })
+                        : renderKey({ tag: "TODAY", value: "—", sub: "run rtk gain", color: COLOR.error });
+                case "week":
+                    return r?.ok
+                        ? renderKey({ tag: "WEEK", value: formatCompact(r.week), sub: "this week", color: COLOR.week })
+                        : renderKey({ tag: "WEEK", value: "—", sub: "run rtk gain", color: COLOR.error });
+                case "month":
+                    return r?.ok
+                        ? renderKey({ tag: "MONTH", value: formatCompact(r.month), sub: "this month", color: COLOR.month })
+                        : renderKey({ tag: "MONTH", value: "—", sub: "run rtk gain", color: COLOR.error });
+                case "money":
+                    return renderKey({
+                        tag: "MONEY",
+                        value: showSignedMoney(money(total)),
+                        sub: r?.ok ? `today ${formatMoney(money(r.today))}` : "graphify only",
+                        color: COLOR.money,
+                    });
             }
         }
     });
@@ -9469,6 +9558,10 @@ function num(v, fallback) {
 /** Format with a leading minus for negatives; `prefix` (e.g. "≈") is added only when non-negative. */
 function showSigned(n, prefix = "") {
     return n < 0 ? "−" + formatCompact(-n) : prefix + formatCompact(n);
+}
+/** Money variant: formatMoney already carries the sign, so only prefix the "≈" when non-negative. */
+function showSignedMoney(usd) {
+    return usd < 0 ? formatMoney(usd) : "≈" + formatMoney(usd);
 }
 
 streamDeck.actions.registerAction(new TokenSavings());

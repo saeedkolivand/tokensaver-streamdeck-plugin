@@ -1,15 +1,15 @@
 # Token Savings — Stream Deck plugin
 
 A single Stream Deck key that shows how many AI-coding tokens you've saved with
-[**RTK** (Rust Token Killer)](https://www.rtk-ai.app/) and [**Graphify**](https://graphify.net/).
-Tap to cycle three readouts, or pin a key to one.
+[**RTK** (Rust Token Killer)](https://www.rtk-ai.app/) and [**Graphify**](https://graphify.net/) —
+plus today / this week / this month and the dollar value. Tap to cycle the readouts, or pin a key to one.
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 ![Platforms](https://img.shields.io/badge/run%20on-macOS%20%7C%20Windows-blue.svg)
 ![Stream Deck](https://img.shields.io/badge/Stream%20Deck-6.5%2B-black.svg)
 ![Node](https://img.shields.io/badge/build%20with-Node%2020%2B-339933.svg)
 
-![Preview of the three key readouts: RTK, Graphify, and Total](docs/preview.png)
+![Preview of the key readouts: RTK, Graphify, Total, Today, Week, Month, and Money](docs/preview.png)
 
 ---
 
@@ -37,38 +37,42 @@ Tap to cycle three readouts, or pin a key to one.
 
 ## What it shows
 
-Tap the key to cycle three readouts (or pin one in settings):
+Tap the key to cycle seven readouts (or pin one in settings):
 
 | Readout | Colour | Source | Trust |
 | --- | --- | --- | --- |
-| **RTK** | green | parsed from `rtk gain` | **measured** — RTK diffs raw vs compressed command output and keeps a SQLite ledger |
+| **RTK** | green | `rtk gain --format json` → `total_saved` | **measured** — RTK diffs raw vs compressed command output and keeps a SQLite ledger |
 | **GRAPHIFY** | amber | `cost.json` (real spend) − `queries × tokens/query` | **net estimate** |
 | **TOTAL** | blue | RTK + Graphify net | **approximate** (`≈`) |
+| **TODAY** | violet | RTK `daily[]` for the current day | **measured** |
+| **WEEK** | pink | RTK `weekly[]` for the current week | **measured** |
+| **MONTH** | sky | RTK `monthly[]` for the current month | **measured** |
+| **MONEY** | gold | saved tokens × `$ per 1M tokens` | **approximate** (`≈`) |
 
-Place the action on three keys, each pinned to a different readout, to see all three at once.
+Place the action on several keys, each pinned to a different readout, to see them all at once.
 
 ## How the numbers work (read this)
 
 The whole point of this plugin is to be honest about what's measured vs estimated.
 
 - **RTK is measured.** RTK compresses command output (`grep`, `find`, `cargo test`,
-  `git diff`…) and records the real before/after token counts. The plugin parses
-  `rtk gain`, so the RTK figure is empirical.
+  `git diff`…) and records the real before/after token counts. The plugin reads
+  `rtk gain --all --format json`, so the **RTK / Today / Week / Month** figures are empirical —
+  pulled straight from RTK's per-day, -week, and -month breakdowns.
 
-- **Graphify is split.** Graphify builds a knowledge graph of your codebase so the
-  assistant traverses the graph instead of re-reading raw files. It logs what it
-  **spent** (the LLM tokens used during extraction) in `graphify-out/cost.json`, but it
-  **never logs the savings** — there's no per-query saving or query count anywhere in
-  `graphify-out/`. So the Graphify readout is **net = estimated savings − real cost**:
-  `queries × tokens/query` (estimate, default `121300` from the ~123k → ~1.7k benchmark)
-  minus what `cost.json` says you spent. It's negative until queries pay back the build,
-  which is the honest picture. With no query count set, it shows the real spend as a
-  negative number.
+- **Graphify is auto-tracked but estimated.** Graphify builds a knowledge graph of your codebase
+  so the assistant traverses the graph instead of re-reading raw files. It logs what it **spent**
+  (the LLM tokens used during extraction) in `graphify-out/cost.json`, but it **never logs the
+  savings** — there's no per-query saving or query count anywhere in `graphify-out/`. So the plugin
+  ships a hook (`track-graphify.mjs`) that counts each real `graphify query` and stamps your
+  project's `cost.json` path automatically (see below). The Graphify readout is then
+  **net = estimated savings − real cost**: `queries × tokens/query` (estimate, default `121300`
+  from the ~123k → ~1.7k benchmark) minus what `cost.json` says you spent. It's negative until
+  queries pay back the build, which is the honest picture.
 
-- **The combined total is approximate.** Both tools hook Claude Code's Grep/Glob. If
-  Graphify diverts a grep to the graph, that grep never runs, so RTK never sees it to
-  compress — the two partly contend for the same operations. The plugin marks the combined
-  value `≈` for this reason. Don't treat it as exact.
+- **Total and Money are approximate.** **Total** = measured RTK + estimated Graphify net, and
+  **Money** = those saved tokens × your `$ per 1M tokens` rate (default `$3`). Because they fold the
+  Graphify estimate into a measured number, both are marked `≈`. Don't treat them as exact.
 
 > **What `cost.json` contains:** `{ total_input_tokens, total_output_tokens, runs: [...] }`
 > — the tokens Graphify burned on semantic extraction. It is a **cost** ledger, not savings.
@@ -136,110 +140,61 @@ Select the key, then open the property inspector:
 
 | Field | What it does |
 | --- | --- |
-| **Mode** | `Cycle on tap` (default), or pin to RTK / Graphify / Combined. |
-| **RTK command** | Defaults to `rtk gain`. If your `rtk` exposes a structured flag (check `rtk gain --help`), point this at it. |
+| **Mode** | `Cycle on tap` (default), or pin to RTK / Graphify / Total / Today / Week / Month / Money. |
+| **RTK command** | Base RTK invocation (default `rtk gain`); the plugin appends `--all --format json`. Point this at a full path if `rtk` isn't on the Stream Deck app's `PATH`. |
 | **Refresh (sec)** | Poll interval, 5–300 (default 30). |
+| **$ per 1M tokens** | Rate used for the Money readout (default `3`). |
 | **Graphify ~tokens/query** | Per-query saving estimate (default `121300`). |
-| **Graphify out / cost.json** | Path to your project's `graphify-out` folder (or the `cost.json` inside it). Reads the **real** tokens Graphify spent. |
-| **Graphify queries** | Manual query count for the estimate; used when no stats file is set. |
-| **Graphify stats file** | Optional JSON (`{ "queries": N }`) holding a live query count (see below). |
+| **Graphify stats file** | Defaults to `~/.tokensaver/graphify.json` — the live counter the hook maintains. Leave blank to use the default. |
+| **Graphify out / cost.json** | Optional. Auto-discovered from the stats file (the hook stamps it); set it only to override. |
+| **Graphify queries** | Manual fallback query count, used only when the stats file has none. |
 
-Path examples for the two path fields:
-
-| OS | Graphify out / cost.json | Graphify stats file |
-| --- | --- | --- |
-| macOS / Linux | `~/code/myproject/graphify-out` | `~/.tokensaver/graphify.json` |
-| Windows | `C:\Users\You\code\myproject\graphify-out` | `C:\Users\You\.tokensaver\graphify.json` |
-
-(The plugin expands a leading `~` to your home directory on every OS.)
+With the hook installed (next section) you normally don't touch the two Graphify path fields — they're
+filled in for you. The plugin expands a leading `~` to your home directory on every OS.
 
 ## Make the Graphify number real
 
-The **cost** side is real as soon as you set **Graphify out / cost.json**. The **savings**
-side needs a query count, which Graphify doesn't track — so you maintain a small
-`{ "queries": N }` file and (optionally) auto-increment it from a Claude Code
-[PreToolUse hook](https://code.claude.com/docs/en/hooks-guide) on `Grep|Glob` (the calls
-Graphify intercepts). Counting Grep/Glob is a **proxy** for "a graph query happened," so the
-result stays an estimate — that's what the `≈` means.
+Graphify never records how many times you query the graph, so the savings side needs a query count.
+The plugin ships a single cross-platform Node hook — [`hooks/track-graphify.mjs`](hooks/track-graphify.mjs) —
+that you wire to a Claude Code [PreToolUse hook](https://code.claude.com/docs/en/hooks-guide). On every
+real `graphify query` / `graphify explain` / `graphify path` it:
 
-The script always exits `0`, so it can never block a tool call. The `scripts`/`hooks` for
-both platforms ship in this repo under `hooks/`.
+1. increments `queries` in `~/.tokensaver/graphify.json` (the file the plugin reads by default), and
+2. stamps that project's `graphify-out/cost.json` path into the same file —
 
-### macOS / Linux
+so **both** Graphify path fields in the plugin fill in automatically. Counting actual graph lookups (not
+raw greps) is the honest proxy for "a query that replaced reading files," which is why the headline stays
+`≈`. The hook always exits `0`, so it can never block a tool call. (Build commands like
+`graphify update`/`extract` are a *cost*, already in `cost.json`, so they aren't counted.)
 
-`hooks/bump-graphify.sh`:
+### Install (macOS / Linux / Windows)
 
-```bash
-#!/usr/bin/env bash
-file="${HOME}/.tokensaver/graphify.json"
-mkdir -p "$(dirname "$file")"
-n=0
-if [ -f "$file" ]; then
-  n=$(grep -oE '[0-9]+' "$file" | head -n1); [ -z "$n" ] && n=0
-fi
-printf '{ "queries": %d }\n' "$((n + 1))" > "$file"
-exit 0
-```
-
-Install it and make it executable:
+Copy the hook next to the counter file, then register it. `node` is required (Claude Code ships with it):
 
 ```bash
+# macOS / Linux
 mkdir -p ~/.tokensaver
-cp hooks/bump-graphify.sh ~/.tokensaver/bump-graphify.sh
-chmod +x ~/.tokensaver/bump-graphify.sh
+cp hooks/track-graphify.mjs ~/.tokensaver/track-graphify.mjs
 ```
-
-Add a hook in `~/.claude/settings.json` (the easiest route is to run `/hooks` in Claude
-Code and let it merge for you):
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Grep|Glob",
-        "hooks": [
-          { "type": "command", "command": "\"$HOME/.tokensaver/bump-graphify.sh\"" }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Then set the plugin's **Graphify stats file** to `~/.tokensaver/graphify.json`.
-
-### Windows
-
-`hooks/bump-graphify.ps1`:
 
 ```powershell
-$ErrorActionPreference = 'SilentlyContinue'
-$file = Join-Path $HOME '.tokensaver\graphify.json'
-$dir  = Split-Path $file
-if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-$n = 0
-if (Test-Path $file) {
-    try { $n = [int]((Get-Content $file -Raw | ConvertFrom-Json).queries) } catch { $n = 0 }
-}
-"{ `"queries`": $($n + 1) }" | Set-Content -Path $file -Encoding utf8
-exit 0
+# Windows (PowerShell)
+New-Item -ItemType Directory -Force "$HOME\.tokensaver" | Out-Null
+Copy-Item hooks\track-graphify.mjs "$HOME\.tokensaver\track-graphify.mjs"
 ```
 
-Copy it to `%USERPROFILE%\.tokensaver\bump-graphify.ps1`, then add a hook in
-`%USERPROFILE%\.claude\settings.json`:
+Add it to your **global** `~/.claude/settings.json` (so graph queries in any project count). The easiest
+route is `/hooks` in Claude Code; or merge this by hand — it's a `Bash` matcher, so add it alongside any
+existing `Bash` hooks rather than overwriting them:
 
 ```json
 {
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Grep|Glob",
+        "matcher": "Bash",
         "hooks": [
-          {
-            "type": "command",
-            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"%USERPROFILE%\\.tokensaver\\bump-graphify.ps1\""
-          }
+          { "type": "command", "command": "node \"PATH_TO/.tokensaver/track-graphify.mjs\"", "timeout": 5000 }
         ]
       }
     ]
@@ -247,38 +202,40 @@ Copy it to `%USERPROFILE%\.tokensaver\bump-graphify.ps1`, then add a hook in
 }
 ```
 
-Then set the plugin's **Graphify stats file** to `C:\Users\You\.tokensaver\graphify.json`.
+Use the absolute path for `PATH_TO` (forward slashes work on Windows too, e.g.
+`node "C:/Users/You/.tokensaver/track-graphify.mjs"`). That's it — leave the plugin's **Graphify stats
+file** and **Graphify out / cost.json** fields blank and they'll be filled in automatically.
 
-> If Graphify already added a `PreToolUse` / `Grep|Glob` hook, don't overwrite it — add this
-> command into that matcher's existing `hooks` array, or add a second matcher object.
-
-> **Split machines (WSL / remote):** the stats file must be readable by the machine running
-> the Stream Deck app. If Claude Code runs elsewhere, write the counter to a shared/synced
-> path and point the plugin field there.
+> **Split machines (WSL / remote):** the stats file must be readable by the machine running the Stream
+> Deck app. If Claude Code runs elsewhere, write the counter to a shared/synced path and point the
+> plugin's **Graphify stats file** field there.
 
 ## Modes & layout
 
-- **Cycle on tap** — each press advances RTK → Graphify → Total.
+- **Cycle on tap** — each press advances RTK → Graphify → Total → Today → Week → Month → Money.
 - **Pinned** — lock the key to one readout; a press just forces a refresh.
-- **All three at once** — drop the action on three keys and pin each to a different readout.
+- **Several at once** — drop the action on several keys and pin each to a different readout.
 
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 | --- | --- |
-| RTK shows `—` / `rtk?` | `rtk` isn't on the Stream Deck app's `PATH`, or `rtk gain` failed. Try the full path in **RTK command**. |
-| Graphify shows a **negative** number | Expected — that's the real `cost.json` spend, not yet offset by query savings. Set a query count. |
-| Graphify still `~0` | No **Graphify out / cost.json** path and no query count. Set at least one. |
+| RTK / Today / Week / Month shows `—` | `rtk` isn't on the Stream Deck app's `PATH`, or `rtk gain --all --format json` failed. Try the full path in **RTK command**. |
+| Graphify shows a **negative** number | Expected — that's the real `cost.json` spend, not yet offset by query savings. Run a few `graphify query` commands. |
+| Graphify says `no queries yet` | The hook hasn't counted a query yet (or isn't installed). See [Make the Graphify number real](#make-the-graphify-number-real). |
+| Today / Week is `0` | No RTK activity recorded for that window yet — it fills in as you use RTK. |
+| Money looks off | Adjust **$ per 1M tokens** in the property inspector (default `3`). |
 | `pack` fails: `must contain property: CodePath` / `UUID` | The manifest is missing top-level `UUID` / `CodePath`. This repo's manifest already includes them — make sure you're packing the repo's version. |
 | Update didn't apply | Quit the Stream Deck app first, bump the manifest `Version`, then reinstall (`streamdeck pack --version 1.0.2.0`). |
-| Property inspector looks blank | It loads `sdpi-components` from a CDN and needs internet on first open; or your install is an older build (no **Graphify out / cost.json** field). |
-| Key sub-label says `est · 0q` | You're on an old build. Reinstall — the current build shows `spent · N runs`. |
+| Property inspector looks blank | It loads `sdpi-components` from a CDN and needs internet on first open; or your install is an older build. |
 
 ## Development
 
 ```bash
+npm install          # first time (pulls dev deps incl. the banner renderer)
 npm run build        # one-off bundle
 npm run watch        # rebuild on change
+npm run preview      # regenerate docs/preview.png from the real key faces
 
 npm i -g @elgato/cli
 streamdeck link com.tokensaver.dashboard.sdPlugin   # register for live dev (once)
@@ -303,8 +260,8 @@ Attach the resulting `com.tokensaver.dashboard.streamDeckPlugin` to a GitHub Rel
 ```
 src/
   plugin.ts          entry: registers the action, connects
-  token-savings.ts   the action — per-key timer, mode cycling, rendering
-  sources.ts         rtk gain parser + Graphify cost.json/estimate + number formatting
+  token-savings.ts   the action — per-key timer, mode cycling, 7 readouts, rendering
+  sources.ts         rtk gain JSON reader + Graphify cost.json/estimate + number/money formatting
   render.ts          SVG key face -> data URI for setImage
 com.tokensaver.dashboard.sdPlugin/
   manifest.json      plugin + action declaration
@@ -312,10 +269,11 @@ com.tokensaver.dashboard.sdPlugin/
   ui/                property inspector
   imgs/              icons
 hooks/
-  bump-graphify.sh   macOS/Linux query counter
-  bump-graphify.ps1  Windows query counter
+  track-graphify.mjs cross-platform query counter (PreToolUse on Bash)
+scripts/
+  make-preview.ts    renders docs/preview.png from the real key faces
 docs/
-  preview.png        readme image
+  preview.png        readme banner (generated)
 ```
 
 ## License

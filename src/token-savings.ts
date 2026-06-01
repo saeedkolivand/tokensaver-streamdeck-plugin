@@ -7,10 +7,10 @@ import {
 	type DidReceiveSettingsEvent,
 } from "@elgato/streamdeck";
 
-import { readRtk, readGraphify, formatCompact } from "./sources";
+import { readRtk, readGraphify, formatCompact, formatMoney } from "./sources";
 import { renderKey } from "./render";
 
-type Mode = "cycle" | "rtk" | "graphify" | "combined";
+type Mode = "cycle" | "rtk" | "graphify" | "total" | "today" | "week" | "month" | "money" | "combined";
 
 type Settings = {
 	mode?: Mode;
@@ -20,6 +20,7 @@ type Settings = {
 	gfyQueries?: number | string;
 	gfyStatsPath?: string;
 	gfyCostPath?: string;
+	usdPerMTokens?: number | string;
 };
 
 /**
@@ -32,10 +33,22 @@ type KeyLike = {
 	setTitle(title: string): Promise<void>;
 };
 
-const ORDER = ["rtk", "graphify", "combined"] as const;
+const ORDER = ["rtk", "graphify", "total", "today", "week", "month", "money"] as const;
 type View = (typeof ORDER)[number];
 
-const COLOR = { rtk: "#34d399", graphify: "#fbbf24", combined: "#60a5fa", error: "#f87171" };
+/** Default location the `track-graphify` hook writes the live query counter to. */
+const DEFAULT_STATS_PATH = "~/.tokensaver/graphify.json";
+
+const COLOR: Record<View | "error", string> = {
+	rtk: "#34d399", // green  — measured
+	graphify: "#fbbf24", // amber  — estimate
+	total: "#60a5fa", // blue   — combined
+	today: "#a78bfa", // violet
+	week: "#f472b6", // pink
+	month: "#38bdf8", // sky
+	money: "#facc15", // gold
+	error: "#f87171", // red
+};
 
 @action({ UUID: "com.tokensaver.dashboard.savings" })
 export class TokenSavings extends SingletonAction<Settings> {
@@ -85,64 +98,102 @@ export class TokenSavings extends SingletonAction<Settings> {
 
 	private view(id: string, s: Settings): View {
 		const m = s.mode ?? "cycle";
-		return m === "cycle" ? ORDER[this.cycle.get(id) ?? 0] : m;
+		if (m === "cycle") return ORDER[this.cycle.get(id) ?? 0];
+		if (m === "combined") return "total"; // back-compat with the old mode name
+		return m as View;
 	}
 
 	private async refresh(a: KeyLike, s: Settings): Promise<void> {
 		const cmd = (s.rtkCommand ?? "").trim() || "rtk gain";
 		const perQuery = num(s.gfyPerQuery, 121_300) || 121_300;
 		const queries = num(s.gfyQueries, 0);
-		const statsPath = (s.gfyStatsPath ?? "").trim() || undefined;
+		const statsPath = (s.gfyStatsPath ?? "").trim() || DEFAULT_STATS_PATH;
 		const costPath = (s.gfyCostPath ?? "").trim() || undefined;
+		const usdPerM = num(s.usdPerMTokens, 3) || 3;
+		const money = (tokens: number): number => (tokens * usdPerM) / 1e6;
 
 		try {
 			const v = this.view(a.id, s);
+			const needRtk = v === "rtk" || v === "total" || v === "today" || v === "week" || v === "month" || v === "money";
+			const needGfy = v === "graphify" || v === "total" || v === "money";
 
-			if (v === "rtk") {
-				const r = await readRtk(cmd);
-				await a.setImage(
-					r.ok
-						? renderKey({
-								tag: "RTK",
-								value: formatCompact(r.saved),
-								sub: r.percent != null ? `${r.percent}% saved` : "saved",
-								color: COLOR.rtk,
-							})
-						: renderKey({ tag: "RTK", value: "—", sub: "run rtk gain", color: COLOR.error }),
-				);
-			} else if (v === "graphify") {
-				const g = await readGraphify({ perQuery, fallbackQueries: queries, statsPath, costPath });
+			const r = needRtk ? await readRtk(cmd) : null;
+			const g = needGfy ? await readGraphify({ perQuery, fallbackQueries: queries, statsPath, costPath }) : null;
+
+			await a.setImage(this.face(v, r, g, money));
+			await a.setTitle(""); // the SVG carries all the text
+		} catch {
+			await a.setImage(renderKey({ tag: "ERR", value: "!", sub: "see logs", color: COLOR.error }));
+		}
+	}
+
+	/** Build the SVG key face for the active readout. */
+	private face(
+		v: View,
+		r: Awaited<ReturnType<typeof readRtk>> | null,
+		g: Awaited<ReturnType<typeof readGraphify>> | null,
+		money: (tokens: number) => number,
+	): string {
+		const total = (r?.ok ? r.totalSaved : 0) + (g?.net ?? 0);
+
+		switch (v) {
+			case "rtk":
+				return r?.ok
+					? renderKey({
+							tag: "RTK",
+							value: formatCompact(r.totalSaved),
+							sub: r.avgPct != null ? `${r.avgPct}% saved` : "saved",
+							color: COLOR.rtk,
+						})
+					: renderKey({ tag: "RTK", value: "—", sub: "run rtk gain", color: COLOR.error });
+
+			case "graphify": {
 				let value: string;
 				let sub: string;
-				if (g.queries > 0) {
+				if (g && g.queries > 0) {
 					value = showSigned(g.net, "≈");
 					sub = g.haveCost ? `net est · ${g.queries}q` : `est · ${g.queries}q`;
-				} else if (g.haveCost) {
+				} else if (g && g.haveCost) {
 					// No query count yet -> show the real build cost honestly (it's a spend, not a saving).
 					value = "−" + formatCompact(g.spent);
 					sub = `spent · ${g.runs} run${g.runs === 1 ? "" : "s"}`;
 				} else {
 					value = "~0";
-					sub = "set queries";
+					sub = "no queries yet";
 				}
-				await a.setImage(renderKey({ tag: "GRAPHIFY", value, sub, color: COLOR.graphify }));
-			} else {
-				const r = await readRtk(cmd);
-				const g = await readGraphify({ perQuery, fallbackQueries: queries, statsPath, costPath });
-				const total = (r.ok ? r.saved : 0) + g.net; // RTK measured + Graphify (est saved − real cost)
-				await a.setImage(
-					renderKey({
-						tag: "TOTAL",
-						value: showSigned(total, "≈"),
-						sub: r.ok ? "measured+est" : "graphify only",
-						color: COLOR.combined,
-					}),
-				);
+				return renderKey({ tag: "GRAPHIFY", value, sub, color: COLOR.graphify });
 			}
 
-			await a.setTitle(""); // the SVG carries all the text
-		} catch {
-			await a.setImage(renderKey({ tag: "ERR", value: "!", sub: "see logs", color: COLOR.error }));
+			case "total":
+				return renderKey({
+					tag: "TOTAL",
+					value: showSigned(total, "≈"),
+					sub: r?.ok ? "measured+est" : "graphify only",
+					color: COLOR.total,
+				});
+
+			case "today":
+				return r?.ok
+					? renderKey({ tag: "TODAY", value: formatCompact(r.today), sub: "saved today", color: COLOR.today })
+					: renderKey({ tag: "TODAY", value: "—", sub: "run rtk gain", color: COLOR.error });
+
+			case "week":
+				return r?.ok
+					? renderKey({ tag: "WEEK", value: formatCompact(r.week), sub: "this week", color: COLOR.week })
+					: renderKey({ tag: "WEEK", value: "—", sub: "run rtk gain", color: COLOR.error });
+
+			case "month":
+				return r?.ok
+					? renderKey({ tag: "MONTH", value: formatCompact(r.month), sub: "this month", color: COLOR.month })
+					: renderKey({ tag: "MONTH", value: "—", sub: "run rtk gain", color: COLOR.error });
+
+			case "money":
+				return renderKey({
+					tag: "MONEY",
+					value: showSignedMoney(money(total)),
+					sub: r?.ok ? `today ${formatMoney(money(r.today))}` : "graphify only",
+					color: COLOR.money,
+				});
 		}
 	}
 }
@@ -156,4 +207,9 @@ function num(v: unknown, fallback: number): number {
 /** Format with a leading minus for negatives; `prefix` (e.g. "≈") is added only when non-negative. */
 function showSigned(n: number, prefix = ""): string {
 	return n < 0 ? "−" + formatCompact(-n) : prefix + formatCompact(n);
+}
+
+/** Money variant: formatMoney already carries the sign, so only prefix the "≈" when non-negative. */
+function showSignedMoney(usd: number): string {
+	return usd < 0 ? formatMoney(usd) : "≈" + formatMoney(usd);
 }
