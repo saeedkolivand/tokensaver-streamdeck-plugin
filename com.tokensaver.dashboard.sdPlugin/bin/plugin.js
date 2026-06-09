@@ -9307,6 +9307,78 @@ async function readGraphify(opts) {
     const grossEst = queries * pq;
     return { ok: true, net: grossEst - spent, grossEst, spent, queries, runs, perQuery: pq, haveCost: projects > 0, projects };
 }
+/**
+ * CodeGraph's contribution — an INDEX-SIZE estimate read straight from CodeGraph's own data.
+ *
+ * CodeGraph stores no savings or query count anywhere (its `.codegraph/` holds only the graph index),
+ * so there's no realized-savings ledger to read like Graphify's cost.json. What it *does* expose is the
+ * live index size via `codegraph status --json <project>` (fileCount / nodeCount). We turn that into a
+ * savings estimate: `filesIndexed × perFile` — the tokens an agent would spend reading the codebase raw,
+ * which CodeGraph lets it skip. It's a CAPACITY estimate (≈ repo size), so it's always marked `≈`.
+ *
+ * The projects to read come from the `track-codegraph` hook, which stamps each project's path into the
+ * stats file (`{ "projectPaths": [...] }`) as you use CodeGraph — true zero-config multi-project. A
+ * manual `projects` override (comma/newline-separated paths) wins when set.
+ */
+async function readCodegraph(opts) {
+    // --- project list: explicit override wins; otherwise the hook-stamped paths ---
+    let paths = [];
+    if (opts.projects && opts.projects.trim()) {
+        paths = opts.projects
+            .split(/[,\n]/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+    }
+    else if (opts.statsPath) {
+        try {
+            const j = JSON.parse(await readFile(expandHome(opts.statsPath), "utf8"));
+            if (Array.isArray(j.projectPaths)) {
+                paths = j.projectPaths.filter((x) => typeof x === "string" && x.trim().length > 0);
+            }
+        }
+        catch {
+            /* missing/invalid -> no projects */
+        }
+    }
+    const base = (opts.command || "").trim() || "codegraph";
+    const perFile = opts.perFile > 0 ? opts.perFile : 3000;
+    let files = 0;
+    let nodes = 0;
+    let projects = 0;
+    const seen = new Set();
+    const winFs = process.platform === "win32"; // case-insensitive paths only on Windows
+    for (const raw of paths) {
+        const p = expandHome(raw);
+        const key = winFs ? p.replace(/\\/g, "/").toLowerCase() : p;
+        if (seen.has(key))
+            continue; // never double-count a project
+        seen.add(key);
+        const s = await readCgStatus(base, p);
+        if (s.ok) {
+            files += s.files;
+            nodes += s.nodes;
+            projects += 1;
+        }
+    }
+    return { ok: true, saved: files * perFile, files, nodes, projects, perFile };
+}
+/** Run `codegraph status --json <path>` and pull the measured index size for one project. */
+async function readCgStatus(base, path) {
+    try {
+        const { stdout } = await run(`${base} status --json "${path}"`, {
+            timeout: 8000,
+            windowsHide: true,
+            maxBuffer: 4 * 1024 * 1024,
+        });
+        const j = JSON.parse(stdout);
+        if (j.initialized !== true)
+            return { ok: false, files: 0, nodes: 0 };
+        return { ok: true, files: numOf(j.fileCount), nodes: numOf(j.nodeCount) };
+    }
+    catch {
+        return { ok: false, files: 0, nodes: 0 }; // not on PATH / not initialized / bad json -> skip
+    }
+}
 /** Read one Graphify cost.json and return its spend + build-run count. */
 async function readCostFile(p) {
     try {
@@ -9415,12 +9487,15 @@ ${SHELL}
     return "data:image/svg+xml;base64," + Buffer.from(svg).toString("base64");
 }
 
-const ORDER = ["rtk", "graphify", "total", "today", "week", "month", "money"];
+const ORDER = ["rtk", "graphify", "codegraph", "total", "today", "week", "month", "money"];
 /** Default location the `track-graphify` hook writes the live query counter to. */
 const DEFAULT_STATS_PATH = "~/.tokensaver/graphify.json";
+/** Default location the `track-codegraph` hook writes its live query counter to. */
+const DEFAULT_CG_STATS_PATH = "~/.tokensaver/codegraph.json";
 const COLOR = {
     rtk: "#34d399", // green  — measured
     graphify: "#fbbf24", // amber  — estimate
+    codegraph: "#a3e635", // lime   — estimate (100% local, no cost)
     total: "#60a5fa", // blue   — combined
     today: "#a78bfa", // violet
     week: "#f472b6", // pink
@@ -9494,15 +9569,23 @@ let TokenSavings = (() => {
             const queries = num(s.gfyQueries, 0);
             const statsPath = (s.gfyStatsPath ?? "").trim() || DEFAULT_STATS_PATH;
             const costPath = (s.gfyCostPath ?? "").trim() || undefined;
+            const cgCommand = (s.cgCommand ?? "").trim() || "codegraph";
+            const cgPerFile = num(s.cgPerFile, 3000) || 3000;
+            const cgStatsPath = (s.cgStatsPath ?? "").trim() || DEFAULT_CG_STATS_PATH;
+            const cgProjects = (s.cgProjects ?? "").trim() || undefined;
             const usdPerM = num(s.usdPerMTokens, 3) || 3;
             const money = (tokens) => (tokens * usdPerM) / 1e6;
             try {
                 const v = this.view(a.id, s);
                 const needRtk = v === "rtk" || v === "total" || v === "today" || v === "week" || v === "month" || v === "money";
                 const needGfy = v === "graphify" || v === "total" || v === "money";
+                const needCg = v === "codegraph" || v === "total" || v === "money";
                 const r = needRtk ? await readRtk(cmd) : null;
                 const g = needGfy ? await readGraphify({ perQuery, fallbackQueries: queries, statsPath, costPath }) : null;
-                await a.setImage(this.face(v, r, g, money));
+                const c = needCg
+                    ? await readCodegraph({ perFile: cgPerFile, command: cgCommand, statsPath: cgStatsPath, projects: cgProjects })
+                    : null;
+                await a.setImage(this.face(v, r, g, c, money));
                 await a.setTitle(""); // the SVG carries all the text
             }
             catch {
@@ -9510,8 +9593,8 @@ let TokenSavings = (() => {
             }
         }
         /** Build the SVG key face for the active readout. */
-        face(v, r, g, money) {
-            const total = (r?.ok ? r.totalSaved : 0) + (g?.net ?? 0);
+        face(v, r, g, c, money) {
+            const total = (r?.ok ? r.totalSaved : 0) + (g?.net ?? 0) + (c?.saved ?? 0);
             switch (v) {
                 case "rtk":
                     return r?.ok
@@ -9542,11 +9625,25 @@ let TokenSavings = (() => {
                     }
                     return renderKey({ tag: "GRAPHIFY", value, sub, color: COLOR.graphify });
                 }
+                case "codegraph": {
+                    // Index-size estimate read live from `codegraph status`. CodeGraph keeps no savings ledger,
+                    // so this is a capacity estimate (files indexed × tokens/file) — always marked ≈.
+                    if (c && c.files > 0) {
+                        const proj = c.projects > 1 ? ` · ${c.projects}p` : "";
+                        return renderKey({
+                            tag: "CODEGRAPH",
+                            value: "≈" + formatCompact(c.saved),
+                            sub: `${formatCompact(c.files)} files${proj}`,
+                            color: COLOR.codegraph,
+                        });
+                    }
+                    return renderKey({ tag: "CODEGRAPH", value: "~0", sub: "no projects yet", color: COLOR.codegraph });
+                }
                 case "total":
                     return renderKey({
                         tag: "TOTAL",
                         value: showSigned(total, "≈"),
-                        sub: r?.ok ? "measured+est" : "graphify only",
+                        sub: r?.ok ? "measured+est" : "estimates only",
                         color: COLOR.total,
                     });
                 case "today":
@@ -9565,7 +9662,7 @@ let TokenSavings = (() => {
                     return renderKey({
                         tag: "MONEY",
                         value: showSignedMoney(money(total)),
-                        sub: r?.ok ? `today ${formatMoney(money(r.today))}` : "graphify only",
+                        sub: r?.ok ? `today ${formatMoney(money(r.today))}` : "estimates only",
                         color: COLOR.money,
                     });
             }

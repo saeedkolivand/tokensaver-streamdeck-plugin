@@ -2,10 +2,10 @@
 	"$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
 	"Name": "Token Savings",
 	"UUID": "com.tokensaver.dashboard",
-	"Version": "1.0.2.0",
+	"Version": "1.0.4.0",
 	"CodePath": "bin/plugin.js",
 	"Author": "you",
-	"Description": "Shows AI coding token savings on a key: RTK (measured via `rtk gain`) and Graphify (estimated), or a combined total. Tap to cycle.",
+	"Description": "Shows AI coding token savings on a key: RTK (measured via `rtk gain`), Graphify (estimated), and CodeGraph (estimated), or a combined total. Tap to cycle.",
 	"Category": "Token Savings",
 	"CategoryIcon": "imgs/plugin/category-icon",
 	"Icon": "imgs/plugin/marketplace",
@@ -32,7 +32,7 @@
 			"Name": "Token Savings",
 			"UUID": "com.tokensaver.dashboard.savings",
 			"Icon": "imgs/actions/savings/icon",
-			"Tooltip": "Display RTK / Graphify / combined token savings. Tap to cycle (in Cycle mode).",
+			"Tooltip": "Display RTK / Graphify / CodeGraph / combined token savings. Tap to cycle (in Cycle mode).",
 			"Controllers": [
 				"Keypad"
 			],

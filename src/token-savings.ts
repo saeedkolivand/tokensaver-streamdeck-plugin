@@ -7,10 +7,20 @@ import {
 	type DidReceiveSettingsEvent,
 } from "@elgato/streamdeck";
 
-import { readRtk, readGraphify, formatCompact, formatMoney } from "./sources";
+import { readRtk, readGraphify, readCodegraph, formatCompact, formatMoney } from "./sources";
 import { renderKey } from "./render";
 
-type Mode = "cycle" | "rtk" | "graphify" | "total" | "today" | "week" | "month" | "money" | "combined";
+type Mode =
+	| "cycle"
+	| "rtk"
+	| "graphify"
+	| "codegraph"
+	| "total"
+	| "today"
+	| "week"
+	| "month"
+	| "money"
+	| "combined";
 
 type Settings = {
 	mode?: Mode;
@@ -20,6 +30,10 @@ type Settings = {
 	gfyQueries?: number | string;
 	gfyStatsPath?: string;
 	gfyCostPath?: string;
+	cgCommand?: string;
+	cgPerFile?: number | string;
+	cgStatsPath?: string;
+	cgProjects?: string;
 	usdPerMTokens?: number | string;
 };
 
@@ -33,15 +47,18 @@ type KeyLike = {
 	setTitle(title: string): Promise<void>;
 };
 
-const ORDER = ["rtk", "graphify", "total", "today", "week", "month", "money"] as const;
+const ORDER = ["rtk", "graphify", "codegraph", "total", "today", "week", "month", "money"] as const;
 type View = (typeof ORDER)[number];
 
 /** Default location the `track-graphify` hook writes the live query counter to. */
 const DEFAULT_STATS_PATH = "~/.tokensaver/graphify.json";
+/** Default location the `track-codegraph` hook writes its live query counter to. */
+const DEFAULT_CG_STATS_PATH = "~/.tokensaver/codegraph.json";
 
 const COLOR: Record<View | "error", string> = {
 	rtk: "#34d399", // green  — measured
 	graphify: "#fbbf24", // amber  — estimate
+	codegraph: "#a3e635", // lime   — estimate (100% local, no cost)
 	total: "#60a5fa", // blue   — combined
 	today: "#a78bfa", // violet
 	week: "#f472b6", // pink
@@ -109,6 +126,10 @@ export class TokenSavings extends SingletonAction<Settings> {
 		const queries = num(s.gfyQueries, 0);
 		const statsPath = (s.gfyStatsPath ?? "").trim() || DEFAULT_STATS_PATH;
 		const costPath = (s.gfyCostPath ?? "").trim() || undefined;
+		const cgCommand = (s.cgCommand ?? "").trim() || "codegraph";
+		const cgPerFile = num(s.cgPerFile, 3000) || 3000;
+		const cgStatsPath = (s.cgStatsPath ?? "").trim() || DEFAULT_CG_STATS_PATH;
+		const cgProjects = (s.cgProjects ?? "").trim() || undefined;
 		const usdPerM = num(s.usdPerMTokens, 3) || 3;
 		const money = (tokens: number): number => (tokens * usdPerM) / 1e6;
 
@@ -116,11 +137,15 @@ export class TokenSavings extends SingletonAction<Settings> {
 			const v = this.view(a.id, s);
 			const needRtk = v === "rtk" || v === "total" || v === "today" || v === "week" || v === "month" || v === "money";
 			const needGfy = v === "graphify" || v === "total" || v === "money";
+			const needCg = v === "codegraph" || v === "total" || v === "money";
 
 			const r = needRtk ? await readRtk(cmd) : null;
 			const g = needGfy ? await readGraphify({ perQuery, fallbackQueries: queries, statsPath, costPath }) : null;
+			const c = needCg
+				? await readCodegraph({ perFile: cgPerFile, command: cgCommand, statsPath: cgStatsPath, projects: cgProjects })
+				: null;
 
-			await a.setImage(this.face(v, r, g, money));
+			await a.setImage(this.face(v, r, g, c, money));
 			await a.setTitle(""); // the SVG carries all the text
 		} catch {
 			await a.setImage(renderKey({ tag: "ERR", value: "!", sub: "see logs", color: COLOR.error }));
@@ -132,9 +157,10 @@ export class TokenSavings extends SingletonAction<Settings> {
 		v: View,
 		r: Awaited<ReturnType<typeof readRtk>> | null,
 		g: Awaited<ReturnType<typeof readGraphify>> | null,
+		c: Awaited<ReturnType<typeof readCodegraph>> | null,
 		money: (tokens: number) => number,
 	): string {
-		const total = (r?.ok ? r.totalSaved : 0) + (g?.net ?? 0);
+		const total = (r?.ok ? r.totalSaved : 0) + (g?.net ?? 0) + (c?.saved ?? 0);
 
 		switch (v) {
 			case "rtk":
@@ -166,11 +192,26 @@ export class TokenSavings extends SingletonAction<Settings> {
 				return renderKey({ tag: "GRAPHIFY", value, sub, color: COLOR.graphify });
 			}
 
+			case "codegraph": {
+				// Index-size estimate read live from `codegraph status`. CodeGraph keeps no savings ledger,
+				// so this is a capacity estimate (files indexed × tokens/file) — always marked ≈.
+				if (c && c.files > 0) {
+					const proj = c.projects > 1 ? ` · ${c.projects}p` : "";
+					return renderKey({
+						tag: "CODEGRAPH",
+						value: "≈" + formatCompact(c.saved),
+						sub: `${formatCompact(c.files)} files${proj}`,
+						color: COLOR.codegraph,
+					});
+				}
+				return renderKey({ tag: "CODEGRAPH", value: "~0", sub: "no projects yet", color: COLOR.codegraph });
+			}
+
 			case "total":
 				return renderKey({
 					tag: "TOTAL",
 					value: showSigned(total, "≈"),
-					sub: r?.ok ? "measured+est" : "graphify only",
+					sub: r?.ok ? "measured+est" : "estimates only",
 					color: COLOR.total,
 				});
 
@@ -193,7 +234,7 @@ export class TokenSavings extends SingletonAction<Settings> {
 				return renderKey({
 					tag: "MONEY",
 					value: showSignedMoney(money(total)),
-					sub: r?.ok ? `today ${formatMoney(money(r.today))}` : "graphify only",
+					sub: r?.ok ? `today ${formatMoney(money(r.today))}` : "estimates only",
 					color: COLOR.money,
 				});
 		}

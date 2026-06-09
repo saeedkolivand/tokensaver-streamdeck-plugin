@@ -12,7 +12,8 @@
 				<option value="cycle">Cycle on tap</option>
 				<option value="rtk">RTK total (measured)</option>
 				<option value="graphify">Graphify (estimate)</option>
-				<option value="total">Total (RTK + Graphify)</option>
+				<option value="codegraph">CodeGraph (estimate)</option>
+				<option value="total">Total (RTK + Graphify + CodeGraph)</option>
 				<option value="today">Today (measured)</option>
 				<option value="week">This week (measured)</option>
 				<option value="month">This month (measured)</option>
@@ -56,6 +57,30 @@
 			<sdpi-textfield setting="gfyQueries" type="number" default="0" placeholder="0 (fallback only)"></sdpi-textfield>
 		</sdpi-item>
 
+		<hr />
+
+		<sdpi-item label="CodeGraph command">
+			<sdpi-textfield setting="cgCommand" default="codegraph" placeholder="codegraph"></sdpi-textfield>
+		</sdpi-item>
+
+		<sdpi-item label="CodeGraph ~tokens/file">
+			<sdpi-textfield setting="cgPerFile" type="number" default="3000"></sdpi-textfield>
+		</sdpi-item>
+
+		<sdpi-item label="CodeGraph projects file">
+			<sdpi-textfield
+				setting="cgStatsPath"
+				placeholder="~/.tokensaver/codegraph.json (default — auto-tracked)"
+			></sdpi-textfield>
+		</sdpi-item>
+
+		<sdpi-item label="CodeGraph projects">
+			<sdpi-textfield
+				setting="cgProjects"
+				placeholder="optional — comma-separated project paths (overrides auto)"
+			></sdpi-textfield>
+		</sdpi-item>
+
 		<details style="margin-top: 10px">
 			<summary>About the numbers</summary>
 			<p style="font-size: 9pt; opacity: 0.8; line-height: 1.4">
@@ -73,8 +98,19 @@
 				until queries pay back the build.
 			</p>
 			<p style="font-size: 9pt; opacity: 0.8; line-height: 1.4">
-				<b>Total</b> and <b>Money</b> blend measured RTK with the Graphify estimate, so they're marked
-				<code>≈</code>. <b>Money</b> = saved tokens &times; <i>$ per 1M tokens</i> (default $3).
+				<b>CodeGraph is read from its own index.</b> CodeGraph stores no savings or query count
+				&mdash; only its graph index &mdash; so the plugin runs <code>codegraph status --json</code> on
+				each project and estimates savings from the live index size: <b>files indexed &times;
+				tokens/file</b> (default 3,000). That's roughly the cost of reading the codebase raw, which
+				CodeGraph lets the agent skip. It's a capacity estimate (&approx; repo size), so it's always
+				marked <code>≈</code>. The <code>track-codegraph</code> hook auto-discovers which projects you
+				use (stamping their paths into <code>~/.tokensaver/codegraph.json</code>); or list paths in
+				<b>CodeGraph projects</b> manually.
+			</p>
+			<p style="font-size: 9pt; opacity: 0.8; line-height: 1.4">
+				<b>Total</b> and <b>Money</b> blend measured RTK with the Graphify and CodeGraph estimates, so
+				they're marked <code>≈</code>. <b>Money</b> = saved tokens &times; <i>$ per 1M tokens</i>
+				(default $3).
 			</p>
 		</details>
 	</body>
