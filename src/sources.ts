@@ -29,11 +29,9 @@ export type GfyResult = {
 
 export type CgResult = {
 	ok: boolean;
-	saved: number; // filesIndexed * perFile (ESTIMATE) — capacity, not realized; always ≈
-	files: number; // total indexed files summed across projects (measured via `codegraph status`)
-	nodes: number; // total indexed symbols summed across projects (measured)
-	projects: number; // number of initialized CodeGraph projects summed
-	perFile: number;
+	saved: number; // queries * perQuery (ESTIMATE) — realized, grows per use; always ≈
+	queries: number;
+	perQuery: number;
 };
 
 /**
@@ -165,78 +163,33 @@ export async function readGraphify(opts: {
 }
 
 /**
- * CodeGraph's contribution — an INDEX-SIZE estimate read straight from CodeGraph's own data.
+ * CodeGraph's contribution — a REALIZED estimate that grows with every lookup.
  *
- * CodeGraph stores no savings or query count anywhere (its `.codegraph/` holds only the graph index),
- * so there's no realized-savings ledger to read like Graphify's cost.json. What it *does* expose is the
- * live index size via `codegraph status --json <project>` (fileCount / nodeCount). We turn that into a
- * savings estimate: `filesIndexed × perFile` — the tokens an agent would spend reading the codebase raw,
- * which CodeGraph lets it skip. It's a CAPACITY estimate (≈ repo size), so it's always marked `≈`.
- *
- * The projects to read come from the `track-codegraph` hook, which stamps each project's path into the
- * stats file (`{ "projectPaths": [...] }`) as you use CodeGraph — true zero-config multi-project. A
- * manual `projects` override (comma/newline-separated paths) wins when set.
+ * CodeGraph builds its index 100% locally (no LLM/API tokens) and records no savings or query count
+ * anywhere, so the saved side is `queries × perQuery`, where perQuery defaults to the ~100k a single
+ * CodeGraph lookup saves (its benchmark: an agent answers with near-zero file reads instead of many
+ * grep/find/Read round-trips). `queries` comes from the stats file the `track-codegraph` hook keeps
+ * (`{ "queries": N }`, incremented on each MCP `codegraph_*` tool or CLI lookup) or a manual fallback.
+ * It only ever climbs, and is always marked `≈`.
  */
 export async function readCodegraph(opts: {
-	perFile: number;
-	command: string; // base CodeGraph invocation, default "codegraph"; we append `status --json <path>`
+	perQuery: number;
+	fallbackQueries: number;
 	statsPath?: string;
-	projects?: string; // manual override: comma/newline-separated project paths
 }): Promise<CgResult> {
-	// --- project list: explicit override wins; otherwise the hook-stamped paths ---
-	let paths: string[] = [];
-	if (opts.projects && opts.projects.trim()) {
-		paths = opts.projects
-			.split(/[,\n]/)
-			.map((s) => s.trim())
-			.filter(Boolean);
-	} else if (opts.statsPath) {
+	let queries = Math.max(0, Math.floor(opts.fallbackQueries || 0));
+	if (opts.statsPath) {
 		try {
-			const j = JSON.parse(await readFile(expandHome(opts.statsPath), "utf8")) as { projectPaths?: unknown };
-			if (Array.isArray(j.projectPaths)) {
-				paths = j.projectPaths.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
+			const j = JSON.parse(await readFile(expandHome(opts.statsPath), "utf8")) as { queries?: unknown };
+			if (typeof j.queries === "number" && Number.isFinite(j.queries)) {
+				queries = Math.max(0, Math.floor(j.queries));
 			}
 		} catch {
-			/* missing/invalid -> no projects */
+			/* missing/invalid -> manual fallback */
 		}
 	}
-
-	const base = (opts.command || "").trim() || "codegraph";
-	const perFile = opts.perFile > 0 ? opts.perFile : 3000;
-	let files = 0;
-	let nodes = 0;
-	let projects = 0;
-	const seen = new Set<string>();
-	const winFs = process.platform === "win32"; // case-insensitive paths only on Windows
-	for (const raw of paths) {
-		const p = expandHome(raw);
-		const key = winFs ? p.replace(/\\/g, "/").toLowerCase() : p;
-		if (seen.has(key)) continue; // never double-count a project
-		seen.add(key);
-		const s = await readCgStatus(base, p);
-		if (s.ok) {
-			files += s.files;
-			nodes += s.nodes;
-			projects += 1;
-		}
-	}
-	return { ok: true, saved: files * perFile, files, nodes, projects, perFile };
-}
-
-/** Run `codegraph status --json <path>` and pull the measured index size for one project. */
-async function readCgStatus(base: string, path: string): Promise<{ ok: boolean; files: number; nodes: number }> {
-	try {
-		const { stdout } = await run(`${base} status --json "${path}"`, {
-			timeout: 8000,
-			windowsHide: true,
-			maxBuffer: 4 * 1024 * 1024,
-		});
-		const j = JSON.parse(stdout) as { initialized?: unknown; fileCount?: unknown; nodeCount?: unknown };
-		if (j.initialized !== true) return { ok: false, files: 0, nodes: 0 };
-		return { ok: true, files: numOf(j.fileCount), nodes: numOf(j.nodeCount) };
-	} catch {
-		return { ok: false, files: 0, nodes: 0 }; // not on PATH / not initialized / bad json -> skip
-	}
+	const pq = opts.perQuery > 0 ? opts.perQuery : 100_000;
+	return { ok: true, saved: queries * pq, queries, perQuery: pq };
 }
 
 /** Read one Graphify cost.json and return its spend + build-run count. */

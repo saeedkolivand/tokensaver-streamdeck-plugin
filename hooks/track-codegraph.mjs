@@ -1,23 +1,25 @@
 #!/usr/bin/env node
 // track-codegraph.mjs
-// PreToolUse hook that auto-DISCOVERS which projects you use CodeGraph in, for the Token Savings
-// Stream Deck plugin. CodeGraph records no savings or query counts anywhere — only its per-project
-// index (.codegraph/codegraph.db). So instead of counting anything, this hook stamps each project's
-// ROOT PATH (the directory that holds a .codegraph/ folder) into:
+// PreToolUse hook that auto-tracks CodeGraph graph lookups for the Token Savings Stream Deck plugin,
+// so the CodeGraph readout grows with every use. CodeGraph is used two ways, and this hook counts BOTH:
 //
-//   ~/.tokensaver/codegraph.json  ->  {
-//     "projectPaths": [".../projA", ".../projB"],   // every CodeGraph project you've used
-//     "updatedAt": ...
-//   }
+//   1. MCP server (the primary path): the agent calls mcp__codegraph__codegraph_explore /
+//      _search / _callers / _callees / _impact / _node.
+//   2. CLI (secondary): `codegraph query|callers|callees|impact|affected`.
 //
-// The plugin then runs `codegraph status --json <path>` for each project and estimates savings from
-// the live index size (files indexed × tokens/file). The hook stores NO savings number itself.
+// On every real lookup it increments the query counter the plugin reads:
 //
-// Fires on real CodeGraph use — the MCP tools (codegraph_explore/search/callers/callees/impact/node)
-// and the CLI (codegraph query/callers/callees/impact/affected). Paths are deduped case- and
-// separator-insensitively (case-insensitive only on Windows).
+//   ~/.tokensaver/codegraph.json  ->  { "queries": N, "updatedAt": ... }
 //
-// Cross-platform, fast, and non-blocking: any error -> exit 0, so it can NEVER block a tool call.
+// CodeGraph builds its index 100% locally (no LLM/API cost) and records no savings of its own, so the
+// plugin's CodeGraph readout is a pure realized estimate: queries × tokens/query.
+//
+// Build/metadata commands (init/index/sync/status/files/serve/install, and the MCP
+// codegraph_status / codegraph_files tools) are NOT counted — they aren't file-replacing lookups.
+//
+// Register it (global ~/.claude/settings.json) with a matcher that covers both Bash and the MCP
+// tools, e.g. "matcher": "Bash|mcp__codegraph__.*". Cross-platform, fast, and non-blocking: any
+// error -> exit 0, so it can NEVER block a tool call.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -32,59 +34,33 @@ try {
 
 try {
 	const tool = String(p.tool_name || "");
+	// The heavy CodeGraph lookups that replace reading raw files. Status/files are metadata, not
+	// savings, so they're excluded from both the MCP and CLI patterns below.
 	const isMcpQuery = /^mcp__codegraph__codegraph_(explore|search|callers|callees|impact|node)$/.test(tool);
 
+	// CLI: `codegraph query|callers|callees|impact|affected` anywhere in the command. Handles prefixes
+	// like `timeout 90 codegraph query "..."`, absolute paths on macOS (`/usr/local/bin/codegraph`) and
+	// Windows (`C:\tools\codegraph.exe`), and a `.exe`/`.cmd` suffix.
 	const cmd = (p.tool_input && p.tool_input.command) || "";
 	const isCliQuery =
 		tool === "Bash" && /(^|[\\/\s])codegraph(?:\.exe|\.cmd)?\s+(query|callers|callees|impact|affected)\b/.test(cmd);
 
 	if (isMcpQuery || isCliQuery) {
-		// Where did the lookup happen? CodeGraph's MCP tools accept an optional projectPath; else the cwd.
-		const start =
-			(p.tool_input && typeof p.tool_input.projectPath === "string" && p.tool_input.projectPath) ||
-			p.cwd ||
-			process.cwd();
+		const dir = path.join(os.homedir(), ".tokensaver");
+		const file = path.join(dir, "codegraph.json");
+		fs.mkdirSync(dir, { recursive: true });
 
-		// Walk up to the nearest directory that holds a .codegraph/ index (like git finds .git/).
-		let dir = path.resolve(start);
-		let root = "";
-		for (;;) {
-			if (fs.existsSync(path.join(dir, ".codegraph"))) {
-				root = dir;
-				break;
-			}
-			const parent = path.dirname(dir);
-			if (parent === dir) break;
-			dir = parent;
+		let data = {};
+		try {
+			data = JSON.parse(fs.readFileSync(file, "utf8")) || {};
+		} catch {
+			/* missing/invalid -> start fresh */
 		}
 
-		if (root) {
-			const out = path.join(os.homedir(), ".tokensaver");
-			const file = path.join(out, "codegraph.json");
-			fs.mkdirSync(out, { recursive: true });
-
-			let data = {};
-			try {
-				data = JSON.parse(fs.readFileSync(file, "utf8")) || {};
-			} catch {
-				/* missing/invalid -> start fresh */
-			}
-
-			// Store clean forward-slash absolute paths; dedupe by a key that is case-insensitive only
-			// on Windows (macOS/Linux filesystems can be case-sensitive).
-			const store = (x) => path.resolve(x).replace(/\\/g, "/");
-			const key = (x) => (process.platform === "win32" ? store(x).toLowerCase() : store(x));
-			const seen = new Map();
-			const add = (x) => {
-				if (typeof x === "string" && x.trim()) seen.set(key(x), store(x));
-			};
-			if (Array.isArray(data.projectPaths)) data.projectPaths.forEach(add);
-			add(root);
-
-			data.projectPaths = [...seen.values()];
-			data.updatedAt = new Date().toISOString();
-			fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
-		}
+		const n = Number.isFinite(data.queries) ? Math.max(0, Math.floor(data.queries)) : 0;
+		data.queries = n + 1;
+		data.updatedAt = new Date().toISOString();
+		fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
 	}
 } catch {
 	/* never block a tool call */

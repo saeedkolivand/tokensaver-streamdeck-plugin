@@ -30,10 +30,9 @@ type Settings = {
 	gfyQueries?: number | string;
 	gfyStatsPath?: string;
 	gfyCostPath?: string;
-	cgCommand?: string;
-	cgPerFile?: number | string;
+	cgPerQuery?: number | string;
+	cgQueries?: number | string;
 	cgStatsPath?: string;
-	cgProjects?: string;
 	usdPerMTokens?: number | string;
 };
 
@@ -126,10 +125,9 @@ export class TokenSavings extends SingletonAction<Settings> {
 		const queries = num(s.gfyQueries, 0);
 		const statsPath = (s.gfyStatsPath ?? "").trim() || DEFAULT_STATS_PATH;
 		const costPath = (s.gfyCostPath ?? "").trim() || undefined;
-		const cgCommand = (s.cgCommand ?? "").trim() || "codegraph";
-		const cgPerFile = num(s.cgPerFile, 3000) || 3000;
+		const cgPerQuery = num(s.cgPerQuery, 100_000) || 100_000;
+		const cgQueries = num(s.cgQueries, 0);
 		const cgStatsPath = (s.cgStatsPath ?? "").trim() || DEFAULT_CG_STATS_PATH;
-		const cgProjects = (s.cgProjects ?? "").trim() || undefined;
 		const usdPerM = num(s.usdPerMTokens, 3) || 3;
 		const money = (tokens: number): number => (tokens * usdPerM) / 1e6;
 
@@ -142,7 +140,7 @@ export class TokenSavings extends SingletonAction<Settings> {
 			const r = needRtk ? await readRtk(cmd) : null;
 			const g = needGfy ? await readGraphify({ perQuery, fallbackQueries: queries, statsPath, costPath }) : null;
 			const c = needCg
-				? await readCodegraph({ perFile: cgPerFile, command: cgCommand, statsPath: cgStatsPath, projects: cgProjects })
+				? await readCodegraph({ perQuery: cgPerQuery, fallbackQueries: cgQueries, statsPath: cgStatsPath })
 				: null;
 
 			await a.setImage(this.face(v, r, g, c, money));
@@ -193,18 +191,17 @@ export class TokenSavings extends SingletonAction<Settings> {
 			}
 
 			case "codegraph": {
-				// Index-size estimate read live from `codegraph status`. CodeGraph keeps no savings ledger,
-				// so this is a capacity estimate (files indexed × tokens/file) — always marked ≈.
-				if (c && c.files > 0) {
-					const proj = c.projects > 1 ? ` · ${c.projects}p` : "";
+				// Realized estimate that climbs with each lookup. CodeGraph is 100% local with no savings
+				// ledger, so this is queries × tokens/query — a pure positive estimate, always marked ≈.
+				if (c && c.queries > 0) {
 					return renderKey({
 						tag: "CODEGRAPH",
 						value: "≈" + formatCompact(c.saved),
-						sub: `${formatCompact(c.files)} files${proj}`,
+						sub: `est · ${c.queries}q`,
 						color: COLOR.codegraph,
 					});
 				}
-				return renderKey({ tag: "CODEGRAPH", value: "~0", sub: "no projects yet", color: COLOR.codegraph });
+				return renderKey({ tag: "CODEGRAPH", value: "~0", sub: "no queries yet", color: COLOR.codegraph });
 			}
 
 			case "total":

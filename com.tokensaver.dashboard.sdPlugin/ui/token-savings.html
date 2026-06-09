@@ -59,26 +59,19 @@
 
 		<hr />
 
-		<sdpi-item label="CodeGraph command">
-			<sdpi-textfield setting="cgCommand" default="codegraph" placeholder="codegraph"></sdpi-textfield>
+		<sdpi-item label="CodeGraph ~tokens/query">
+			<sdpi-textfield setting="cgPerQuery" type="number" default="100000"></sdpi-textfield>
 		</sdpi-item>
 
-		<sdpi-item label="CodeGraph ~tokens/file">
-			<sdpi-textfield setting="cgPerFile" type="number" default="3000"></sdpi-textfield>
-		</sdpi-item>
-
-		<sdpi-item label="CodeGraph projects file">
+		<sdpi-item label="CodeGraph stats file">
 			<sdpi-textfield
 				setting="cgStatsPath"
 				placeholder="~/.tokensaver/codegraph.json (default — auto-tracked)"
 			></sdpi-textfield>
 		</sdpi-item>
 
-		<sdpi-item label="CodeGraph projects">
-			<sdpi-textfield
-				setting="cgProjects"
-				placeholder="optional — comma-separated project paths (overrides auto)"
-			></sdpi-textfield>
+		<sdpi-item label="CodeGraph queries">
+			<sdpi-textfield setting="cgQueries" type="number" default="0" placeholder="0 (fallback only)"></sdpi-textfield>
 		</sdpi-item>
 
 		<details style="margin-top: 10px">
@@ -98,14 +91,12 @@
 				until queries pay back the build.
 			</p>
 			<p style="font-size: 9pt; opacity: 0.8; line-height: 1.4">
-				<b>CodeGraph is read from its own index.</b> CodeGraph stores no savings or query count
-				&mdash; only its graph index &mdash; so the plugin runs <code>codegraph status --json</code> on
-				each project and estimates savings from the live index size: <b>files indexed &times;
-				tokens/file</b> (default 3,000). That's roughly the cost of reading the codebase raw, which
-				CodeGraph lets the agent skip. It's a capacity estimate (&approx; repo size), so it's always
-				marked <code>≈</code>. The <code>track-codegraph</code> hook auto-discovers which projects you
-				use (stamping their paths into <code>~/.tokensaver/codegraph.json</code>); or list paths in
-				<b>CodeGraph projects</b> manually.
+				<b>CodeGraph is auto-tracked but estimated.</b> Install the <code>track-codegraph</code> hook
+				(see the README) and it counts each real CodeGraph lookup &mdash; both the
+				<code>codegraph_explore</code>/etc. MCP tools and the <code>codegraph query</code> CLI &mdash; into
+				<code>~/.tokensaver/codegraph.json</code>. CodeGraph builds its index <b>100% locally</b> (no API
+				cost) and records no savings of its own, so the readout is a pure realized estimate that climbs
+				with use: <b>queries &times; tokens/query</b> (default 100,000). It's always marked <code>≈</code>.
 			</p>
 			<p style="font-size: 9pt; opacity: 0.8; line-height: 1.4">
 				<b>Total</b> and <b>Money</b> blend measured RTK with the Graphify and CodeGraph estimates, so

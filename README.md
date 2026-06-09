@@ -43,7 +43,7 @@ Tap the key to cycle eight readouts (or pin one in settings):
 | --- | --- | --- | --- |
 | **RTK** | green | `rtk gain --format json` → `total_saved` | **measured** — RTK diffs raw vs compressed command output and keeps a SQLite ledger |
 | **GRAPHIFY** | amber | `cost.json` (real spend) − `queries × tokens/query` | **net estimate** |
-| **CODEGRAPH** | lime | `codegraph status` index size × `tokens/file` (100% local) | **estimate** (`≈`) |
+| **CODEGRAPH** | lime | `queries × tokens/query` (100% local — counted per lookup) | **estimate** (`≈`) |
 | **TOTAL** | blue | RTK + Graphify net + CodeGraph | **approximate** (`≈`) |
 | **TODAY** | violet | RTK `daily[]` for the current day | **measured** |
 | **WEEK** | pink | RTK `weekly[]` for the current week | **measured** |
@@ -72,16 +72,16 @@ The whole point of this plugin is to be honest about what's measured vs estimate
   project you query**. It's negative until queries pay back the build, which is the honest picture.
   When more than one project is in play the sub-label shows a `· Np` project count.
 
-- **CodeGraph is read from its own index — it's a capacity estimate.** CodeGraph indexes your codebase
+- **CodeGraph is auto-tracked but estimated — and climbs with use.** CodeGraph indexes your codebase
   into a local knowledge graph so the assistant queries the graph (via its MCP tools or CLI) instead of
-  grepping and reading raw files. Unlike Graphify, CodeGraph stores **no savings or query count
-  anywhere** — its `.codegraph/` folder holds only the index — so there's nothing to net out and nothing
-  to count. What it *does* expose is the live index size via `codegraph status --json`. The plugin reads
-  that (`fileCount`) and estimates **savings = files indexed × `tokens/file`** (default `3000`): roughly
-  the tokens an agent would spend reading the whole codebase raw, which CodeGraph lets it skip. That makes
-  it a **capacity** estimate (≈ your repo size) rather than realized per-use savings, so it's always
-  marked `≈`. Which projects to read is auto-discovered by a hook (`track-codegraph.mjs`) that stamps each
-  project's path as you use CodeGraph — see below.
+  grepping and reading raw files. It builds that index **100% locally** — no LLM/API tokens — and, unlike
+  Graphify, records **no savings or query count of its own** (its `.codegraph/` folder holds only the
+  index). So the plugin ships a hook (`track-codegraph.mjs`) that counts each real CodeGraph lookup —
+  both the MCP `codegraph_explore`/`codegraph_search`/etc. tools and the `codegraph query` CLI — into
+  `~/.tokensaver/codegraph.json`. The CodeGraph readout is then a realized estimate that grows every time
+  you use it: **`queries × tokens/query`** (default `100000`, from CodeGraph's benchmark of answering a
+  question with near-zero file reads). It's always positive and always marked `≈`. Build/metadata
+  commands (`init`/`index`/`sync`/`status`) aren't counted.
 
 - **Total and Money are approximate.** **Total** = measured RTK + estimated Graphify net + estimated
   CodeGraph, and **Money** = those saved tokens × your `$ per 1M tokens` rate (default `$3`). Because
@@ -108,9 +108,8 @@ Stream Deck app ships — you don't install Node to *run* it.
 - **Graphify** — see <https://graphify.net/>. You point the plugin at a project's
   `graphify-out/` folder.
 - **CodeGraph** — see <https://www.npmjs.com/package/@colbymchenry/codegraph>
-  (`npm i -g @colbymchenry/codegraph`). The plugin reads your projects' index size by running
-  `codegraph status --json`, so the `codegraph` binary should be on the Stream Deck app's `PATH` (or set
-  the full path in **CodeGraph command**).
+  (`npm i -g @colbymchenry/codegraph`). The plugin counts your CodeGraph lookups via a hook; there's
+  no folder to point at.
 
 **To build from source:** [Node.js 20+](https://nodejs.org) (any OS).
 
@@ -166,13 +165,12 @@ Select the key, then open the property inspector:
 | **Graphify stats file** | Defaults to `~/.tokensaver/graphify.json` — the live counter the hook maintains. Leave blank to use the default. |
 | **Graphify out / cost.json** | Optional. Auto-discovered from the stats file (the hook stamps it); set it only to override. |
 | **Graphify queries** | Manual fallback query count, used only when the stats file has none. |
-| **CodeGraph command** | Base CodeGraph invocation (default `codegraph`); the plugin appends `status --json <project>`. Point this at a full path if `codegraph` isn't on the Stream Deck app's `PATH`. |
-| **CodeGraph ~tokens/file** | Per-file saving estimate (default `3000`). |
-| **CodeGraph projects file** | Defaults to `~/.tokensaver/codegraph.json` — the project list the hook maintains. Leave blank to use the default. |
-| **CodeGraph projects** | Optional. Comma-separated project paths to read directly; overrides the auto-discovered list. |
+| **CodeGraph ~tokens/query** | Per-query saving estimate (default `100000`). |
+| **CodeGraph stats file** | Defaults to `~/.tokensaver/codegraph.json` — the live counter the hook maintains. Leave blank to use the default. |
+| **CodeGraph queries** | Manual fallback query count, used only when the stats file has none. |
 
 With the hooks installed (next sections) you normally don't touch the Graphify path fields or the
-CodeGraph project fields — they're filled in for you. The plugin expands a leading `~` to your home
+CodeGraph stats file — they're filled in for you. The plugin expands a leading `~` to your home
 directory on every OS.
 
 ## Make the Graphify number real
@@ -245,20 +243,19 @@ handled for you.
 
 ## Make the CodeGraph number real
 
-The CodeGraph savings number is read **straight from CodeGraph's own index** — the plugin runs
-`codegraph status --json <project>` and multiplies the `fileCount` it reports by your **~tokens/file**.
-That part needs no setup beyond having `codegraph` on the Stream Deck app's `PATH` (or set the full path
-in **CodeGraph command**).
+CodeGraph builds its index 100% locally and records **no savings or query count of its own**, so the
+savings side needs a query count — and counting is the only way to make the number grow each time you use
+CodeGraph. CodeGraph is used two ways and the plugin counts **both**: its **MCP tools**
+(`codegraph_explore` / `codegraph_search` / `codegraph_callers` / `codegraph_callees` /
+`codegraph_impact` / `codegraph_node` — the primary path) and its **CLI**
+(`codegraph query` / `callers` / `callees` / `impact` / `affected`). The plugin ships a single
+cross-platform Node hook — [`hooks/track-codegraph.mjs`](hooks/track-codegraph.mjs) — that, on every
+real CodeGraph lookup, increments `queries` in `~/.tokensaver/codegraph.json` (the file the plugin reads
+by default).
 
-The only thing the plugin can't know on its own is **which projects** you've indexed with CodeGraph. So
-it ships a single cross-platform Node hook — [`hooks/track-codegraph.mjs`](hooks/track-codegraph.mjs) —
-that auto-discovers them: on every real CodeGraph lookup (its **MCP tools** `codegraph_explore` /
-`codegraph_search` / `codegraph_callers` / `codegraph_callees` / `codegraph_impact` / `codegraph_node`,
-or its **CLI** `codegraph query` / `callers` / `callees` / `impact` / `affected`) it walks up to the
-project root that holds a `.codegraph/` folder and records its path into a deduped `projectPaths` list in
-`~/.tokensaver/codegraph.json`. It stores **no savings number** — just the paths, so the plugin can sum
-`fileCount` across every project you use. The hook always exits `0`, so it can never block a tool call.
-(Prefer not to use the hook? Just list your project paths in the **CodeGraph projects** field instead.)
+The readout is then a realized estimate: `queries × tokens/query` (always `≈`), climbing with every
+lookup. Build/metadata commands (`init` / `index` / `sync` / `status` / `files` / `serve`) are *not*
+counted. The hook always exits `0`, so it can never block a tool call.
 
 Copy the hook into `~/.tokensaver`, then register it. `node` is required (Claude Code ships with it):
 
@@ -300,9 +297,9 @@ Use the **absolute** path for `PATH_TO` (hook commands don't expand `~`/`$HOME`)
 | macOS / Linux | `node "/Users/you/.tokensaver/track-codegraph.mjs"` |
 | Windows | `node "C:/Users/You/.tokensaver/track-codegraph.mjs"` (forward slashes work in Node on Windows) |
 
-That's it — leave the plugin's **CodeGraph projects file** field blank and the projects you use are
-discovered automatically. (The first lookup after install is what stamps a project, so the readout shows
-`~0 / no projects yet` until you've used CodeGraph at least once in a project.)
+That's it — leave the plugin's **CodeGraph stats file** field blank and it's filled in automatically.
+(The first lookup after install is what counts, so the readout shows `~0 / no queries yet` until you've
+used CodeGraph at least once.)
 
 ## Modes & layout
 
@@ -317,11 +314,12 @@ discovered automatically. (The first lookup after install is what stamps a proje
 | RTK / Today / Week / Month shows `—` | `rtk` isn't on the Stream Deck app's `PATH`, or `rtk gain --all --format json` failed. Try the full path in **RTK command**. |
 | Graphify shows a **negative** number | Expected — that's the real `cost.json` spend, not yet offset by query savings. Run a few `graphify query` commands. |
 | Graphify says `no queries yet` | The hook hasn't counted a query yet (or isn't installed). See [Make the Graphify number real](#make-the-graphify-number-real). |
-| CodeGraph says `no projects yet` | No project has been stamped yet (use CodeGraph once after installing the hook — matcher `Bash\|mcp__codegraph__.*`), or `codegraph` isn't on the Stream Deck app's `PATH` (set **CodeGraph command** to its full path), or the project isn't initialized (`codegraph init`). See [Make the CodeGraph number real](#make-the-codegraph-number-real). |
+| CodeGraph says `no queries yet` | The hook hasn't counted a lookup yet (or isn't installed). Make sure the matcher is `Bash\|mcp__codegraph__.*` so MCP tool calls count too, and restart Claude Code after editing settings (hooks load at session start). See [Make the CodeGraph number real](#make-the-codegraph-number-real). |
+| CodeGraph number doesn't change after a query | The matched session was started **before** the hook was added — settings hooks load at session start, so restart Claude Code. Also confirm `~/.tokensaver/codegraph.json` exists and `queries` is climbing. |
 | Today / Week is `0` | No RTK activity recorded for that window yet — it fills in as you use RTK. |
 | Money looks off | Adjust **$ per 1M tokens** in the property inspector (default `3`). |
 | `pack` fails: `must contain property: CodePath` / `UUID` | The manifest is missing top-level `UUID` / `CodePath`. This repo's manifest already includes them — make sure you're packing the repo's version. |
-| Update didn't apply | Quit the Stream Deck app first, bump the manifest `Version`, then reinstall (`streamdeck pack --version 1.0.4.0`). |
+| Update didn't apply | Quit the Stream Deck app first, bump the manifest `Version`, then reinstall (`streamdeck pack --version 1.0.5.0`). |
 | Property inspector looks blank | It loads `sdpi-components` from a CDN and needs internet on first open; or your install is an older build. |
 
 ## Development
@@ -344,7 +342,7 @@ external, so the installed `.sdPlugin` needs no `node_modules`.
 
 ```bash
 npm run build
-streamdeck pack com.tokensaver.dashboard.sdPlugin --version 1.0.4.0 --force
+streamdeck pack com.tokensaver.dashboard.sdPlugin --version 1.0.5.0 --force
 ```
 
 Attach the resulting `com.tokensaver.dashboard.streamDeckPlugin` to a GitHub Release.
@@ -356,7 +354,7 @@ Attach the resulting `com.tokensaver.dashboard.streamDeckPlugin` to a GitHub Rel
 src/
   plugin.ts          entry: registers the action, connects
   token-savings.ts   the action — per-key timer, mode cycling, 8 readouts, rendering
-  sources.ts         rtk gain JSON reader + Graphify cost.json/estimate + CodeGraph status/index estimate + number/money formatting
+  sources.ts         rtk gain JSON reader + Graphify cost.json/estimate + CodeGraph query estimate + number/money formatting
   render.ts          SVG key face -> data URI for setImage
 com.tokensaver.dashboard.sdPlugin/
   manifest.json      plugin + action declaration
@@ -365,7 +363,7 @@ com.tokensaver.dashboard.sdPlugin/
   imgs/              icons
 hooks/
   track-graphify.mjs  cross-platform query counter (PreToolUse on Bash)
-  track-codegraph.mjs cross-platform project-path discovery (PreToolUse on Bash + codegraph MCP tools)
+  track-codegraph.mjs cross-platform query counter (PreToolUse on Bash + codegraph MCP tools)
 scripts/
   make-preview.ts    renders docs/preview.png from the real key faces
 docs/

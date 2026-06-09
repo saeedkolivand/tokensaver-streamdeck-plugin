@@ -19,7 +19,7 @@ const out = join(here, "..", "docs", "preview.png");
 const FACES = [
 	{ tag: "RTK", value: "24.2M", sub: "92% saved", color: "#34d399" },
 	{ tag: "GRAPHIFY", value: "≈2.8M", sub: "net est · 25q", color: "#fbbf24" },
-	{ tag: "CODEGRAPH", value: "≈3.0M", sub: "1K files · 2p", color: "#a3e635" },
+	{ tag: "CODEGRAPH", value: "≈3.1M", sub: "est · 31q", color: "#a3e635" },
 	{ tag: "TOTAL", value: "≈30M", sub: "measured+est", color: "#60a5fa" },
 	{ tag: "TODAY", value: "315K", sub: "saved today", color: "#a78bfa" },
 	{ tag: "WEEK", value: "9.4M", sub: "this week", color: "#f472b6" },

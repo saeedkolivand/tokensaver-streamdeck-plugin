@@ -2,7 +2,7 @@
 	"$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
 	"Name": "Token Savings",
 	"UUID": "com.tokensaver.dashboard",
-	"Version": "1.0.4.0",
+	"Version": "1.0.5.0",
 	"CodePath": "bin/plugin.js",
 	"Author": "you",
 	"Description": "Shows AI coding token savings on a key: RTK (measured via `rtk gain`), Graphify (estimated), and CodeGraph (estimated), or a combined total. Tap to cycle.",
