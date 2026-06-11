@@ -17,6 +17,9 @@ type Mode =
 	| "codegraph"
 	| "total"
 	| "today"
+	| "gfytoday"
+	| "cgtoday"
+	| "todaytotal"
 	| "week"
 	| "month"
 	| "money"
@@ -46,7 +49,19 @@ type KeyLike = {
 	setTitle(title: string): Promise<void>;
 };
 
-const ORDER = ["rtk", "graphify", "codegraph", "total", "today", "week", "month", "money"] as const;
+const ORDER = [
+	"rtk",
+	"graphify",
+	"codegraph",
+	"total",
+	"today",
+	"gfytoday",
+	"cgtoday",
+	"todaytotal",
+	"week",
+	"month",
+	"money",
+] as const;
 type View = (typeof ORDER)[number];
 
 /** Default location the `track-graphify` hook writes the live query counter to. */
@@ -59,7 +74,10 @@ const COLOR: Record<View | "error", string> = {
 	graphify: "#fbbf24", // amber  — estimate
 	codegraph: "#a3e635", // lime   — estimate (100% local, no cost)
 	total: "#60a5fa", // blue   — combined
-	today: "#a78bfa", // violet
+	today: "#a78bfa", // violet — RTK measured today
+	gfytoday: "#fcd34d", // amber  — Graphify today (estimate)
+	cgtoday: "#bef264", // lime   — CodeGraph today (estimate)
+	todaytotal: "#818cf8", // indigo — all three, today (≈)
 	week: "#f472b6", // pink
 	month: "#38bdf8", // sky
 	money: "#facc15", // gold
@@ -133,9 +151,16 @@ export class TokenSavings extends SingletonAction<Settings> {
 
 		try {
 			const v = this.view(a.id, s);
-			const needRtk = v === "rtk" || v === "total" || v === "today" || v === "week" || v === "month" || v === "money";
-			const needGfy = v === "graphify" || v === "total" || v === "money";
-			const needCg = v === "codegraph" || v === "total" || v === "money";
+			const needRtk =
+				v === "rtk" ||
+				v === "total" ||
+				v === "today" ||
+				v === "todaytotal" ||
+				v === "week" ||
+				v === "month" ||
+				v === "money";
+			const needGfy = v === "graphify" || v === "total" || v === "money" || v === "gfytoday" || v === "todaytotal";
+			const needCg = v === "codegraph" || v === "total" || v === "money" || v === "cgtoday" || v === "todaytotal";
 
 			const r = needRtk ? await readRtk(cmd) : null;
 			const g = needGfy ? await readGraphify({ perQuery, fallbackQueries: queries, statsPath, costPath }) : null;
@@ -216,6 +241,39 @@ export class TokenSavings extends SingletonAction<Settings> {
 				return r?.ok
 					? renderKey({ tag: "TODAY", value: formatCompact(r.today), sub: "saved today", color: COLOR.today })
 					: renderKey({ tag: "TODAY", value: "—", sub: "run rtk gain", color: COLOR.error });
+
+			case "gfytoday":
+				// Today's Graphify queries × tokens/query — gross estimate (no per-day spend), always ≈.
+				return g && g.todayQueries > 0
+					? renderKey({
+							tag: "GFY TODAY",
+							value: "≈" + formatCompact(g.todaySaved),
+							sub: `est · ${g.todayQueries}q`,
+							color: COLOR.gfytoday,
+						})
+					: renderKey({ tag: "GFY TODAY", value: "~0", sub: "no queries today", color: COLOR.gfytoday });
+
+			case "cgtoday":
+				// Today's CodeGraph lookups × tokens/query — realized estimate, always ≈.
+				return c && c.todayQueries > 0
+					? renderKey({
+							tag: "CG TODAY",
+							value: "≈" + formatCompact(c.todaySaved),
+							sub: `est · ${c.todayQueries}q`,
+							color: COLOR.cgtoday,
+						})
+					: renderKey({ tag: "CG TODAY", value: "~0", sub: "no queries today", color: COLOR.cgtoday });
+
+			case "todaytotal": {
+				// RTK's measured today + Graphify/CodeGraph today estimates, so it's marked ≈.
+				const todayAll = (r?.ok ? r.today : 0) + (g?.todaySaved ?? 0) + (c?.todaySaved ?? 0);
+				return renderKey({
+					tag: "TODAY ALL",
+					value: showSigned(todayAll, "≈"),
+					sub: r?.ok ? "measured+est" : "estimates only",
+					color: COLOR.todaytotal,
+				});
+			}
 
 			case "week":
 				return r?.ok

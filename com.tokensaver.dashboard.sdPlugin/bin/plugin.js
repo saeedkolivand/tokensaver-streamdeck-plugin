@@ -9261,6 +9261,7 @@ async function readRtk(base) {
 async function readGraphify(opts) {
     // --- stats file: query count (+ the per-project cost paths the hook recorded) ---
     let queries = Math.max(0, Math.floor(opts.fallbackQueries || 0));
+    let todayQueries = 0; // only the hook's day buckets carry this; manual fallbacks have no "today"
     let statsCostPaths = [];
     if (opts.statsPath) {
         try {
@@ -9269,6 +9270,7 @@ async function readGraphify(opts) {
             if (typeof j.queries === "number" && Number.isFinite(j.queries)) {
                 queries = Math.max(0, Math.floor(j.queries));
             }
+            todayQueries = Math.max(0, Math.floor(Number(j.daily?.[localYMD()]) || 0));
             if (Array.isArray(j.costPaths)) {
                 statsCostPaths = j.costPaths.filter((x) => typeof x === "string" && x.trim().length > 0);
             }
@@ -9305,7 +9307,19 @@ async function readGraphify(opts) {
     }
     const pq = opts.perQuery > 0 ? opts.perQuery : 121_300;
     const grossEst = queries * pq;
-    return { ok: true, net: grossEst - spent, grossEst, spent, queries, runs, perQuery: pq, haveCost: projects > 0, projects };
+    return {
+        ok: true,
+        net: grossEst - spent,
+        grossEst,
+        spent,
+        queries,
+        runs,
+        perQuery: pq,
+        haveCost: projects > 0,
+        projects,
+        todayQueries,
+        todaySaved: todayQueries * pq,
+    };
 }
 /**
  * CodeGraph's contribution — a REALIZED estimate that grows with every lookup.
@@ -9319,19 +9333,21 @@ async function readGraphify(opts) {
  */
 async function readCodegraph(opts) {
     let queries = Math.max(0, Math.floor(opts.fallbackQueries || 0));
+    let todayQueries = 0; // only the hook's day buckets carry this; manual fallbacks have no "today"
     if (opts.statsPath) {
         try {
             const j = JSON.parse(await readFile(expandHome(opts.statsPath), "utf8"));
             if (typeof j.queries === "number" && Number.isFinite(j.queries)) {
                 queries = Math.max(0, Math.floor(j.queries));
             }
+            todayQueries = Math.max(0, Math.floor(Number(j.daily?.[localYMD()]) || 0));
         }
         catch {
             /* missing/invalid -> manual fallback */
         }
     }
     const pq = opts.perQuery > 0 ? opts.perQuery : 100_000;
-    return { ok: true, saved: queries * pq, queries, perQuery: pq };
+    return { ok: true, saved: queries * pq, queries, perQuery: pq, todayQueries, todaySaved: todayQueries * pq };
 }
 /** Read one Graphify cost.json and return its spend + build-run count. */
 async function readCostFile(p) {
@@ -9441,7 +9457,19 @@ ${SHELL}
     return "data:image/svg+xml;base64," + Buffer.from(svg).toString("base64");
 }
 
-const ORDER = ["rtk", "graphify", "codegraph", "total", "today", "week", "month", "money"];
+const ORDER = [
+    "rtk",
+    "graphify",
+    "codegraph",
+    "total",
+    "today",
+    "gfytoday",
+    "cgtoday",
+    "todaytotal",
+    "week",
+    "month",
+    "money",
+];
 /** Default location the `track-graphify` hook writes the live query counter to. */
 const DEFAULT_STATS_PATH = "~/.tokensaver/graphify.json";
 /** Default location the `track-codegraph` hook writes its live query counter to. */
@@ -9451,7 +9479,10 @@ const COLOR = {
     graphify: "#fbbf24", // amber  — estimate
     codegraph: "#a3e635", // lime   — estimate (100% local, no cost)
     total: "#60a5fa", // blue   — combined
-    today: "#a78bfa", // violet
+    today: "#a78bfa", // violet — RTK measured today
+    gfytoday: "#fcd34d", // amber  — Graphify today (estimate)
+    cgtoday: "#bef264", // lime   — CodeGraph today (estimate)
+    todaytotal: "#818cf8", // indigo — all three, today (≈)
     week: "#f472b6", // pink
     month: "#38bdf8", // sky
     money: "#facc15", // gold
@@ -9530,9 +9561,15 @@ let TokenSavings = (() => {
             const money = (tokens) => (tokens * usdPerM) / 1e6;
             try {
                 const v = this.view(a.id, s);
-                const needRtk = v === "rtk" || v === "total" || v === "today" || v === "week" || v === "month" || v === "money";
-                const needGfy = v === "graphify" || v === "total" || v === "money";
-                const needCg = v === "codegraph" || v === "total" || v === "money";
+                const needRtk = v === "rtk" ||
+                    v === "total" ||
+                    v === "today" ||
+                    v === "todaytotal" ||
+                    v === "week" ||
+                    v === "month" ||
+                    v === "money";
+                const needGfy = v === "graphify" || v === "total" || v === "money" || v === "gfytoday" || v === "todaytotal";
+                const needCg = v === "codegraph" || v === "total" || v === "money" || v === "cgtoday" || v === "todaytotal";
                 const r = needRtk ? await readRtk(cmd) : null;
                 const g = needGfy ? await readGraphify({ perQuery, fallbackQueries: queries, statsPath, costPath }) : null;
                 const c = needCg
@@ -9602,6 +9639,36 @@ let TokenSavings = (() => {
                     return r?.ok
                         ? renderKey({ tag: "TODAY", value: formatCompact(r.today), sub: "saved today", color: COLOR.today })
                         : renderKey({ tag: "TODAY", value: "—", sub: "run rtk gain", color: COLOR.error });
+                case "gfytoday":
+                    // Today's Graphify queries × tokens/query — gross estimate (no per-day spend), always ≈.
+                    return g && g.todayQueries > 0
+                        ? renderKey({
+                            tag: "GFY TODAY",
+                            value: "≈" + formatCompact(g.todaySaved),
+                            sub: `est · ${g.todayQueries}q`,
+                            color: COLOR.gfytoday,
+                        })
+                        : renderKey({ tag: "GFY TODAY", value: "~0", sub: "no queries today", color: COLOR.gfytoday });
+                case "cgtoday":
+                    // Today's CodeGraph lookups × tokens/query — realized estimate, always ≈.
+                    return c && c.todayQueries > 0
+                        ? renderKey({
+                            tag: "CG TODAY",
+                            value: "≈" + formatCompact(c.todaySaved),
+                            sub: `est · ${c.todayQueries}q`,
+                            color: COLOR.cgtoday,
+                        })
+                        : renderKey({ tag: "CG TODAY", value: "~0", sub: "no queries today", color: COLOR.cgtoday });
+                case "todaytotal": {
+                    // RTK's measured today + Graphify/CodeGraph today estimates, so it's marked ≈.
+                    const todayAll = (r?.ok ? r.today : 0) + (g?.todaySaved ?? 0) + (c?.todaySaved ?? 0);
+                    return renderKey({
+                        tag: "TODAY ALL",
+                        value: showSigned(todayAll, "≈"),
+                        sub: r?.ok ? "measured+est" : "estimates only",
+                        color: COLOR.todaytotal,
+                    });
+                }
                 case "week":
                     return r?.ok
                         ? renderKey({ tag: "WEEK", value: formatCompact(r.week), sub: "this week", color: COLOR.week })

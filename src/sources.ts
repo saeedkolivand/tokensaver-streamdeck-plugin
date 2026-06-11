@@ -25,6 +25,8 @@ export type GfyResult = {
 	perQuery: number;
 	haveCost: boolean; // whether at least one cost.json was found and read
 	projects: number; // number of distinct project cost.json files summed
+	todayQueries: number; // queries the hook bucketed under the current local day
+	todaySaved: number; // todayQueries * perQuery (ESTIMATE, gross — no spend offset for a single day)
 };
 
 export type CgResult = {
@@ -32,6 +34,8 @@ export type CgResult = {
 	saved: number; // queries * perQuery (ESTIMATE) — realized, grows per use; always ≈
 	queries: number;
 	perQuery: number;
+	todayQueries: number; // queries the hook bucketed under the current local day
+	todaySaved: number; // todayQueries * perQuery (ESTIMATE)
 };
 
 /**
@@ -116,14 +120,21 @@ export async function readGraphify(opts: {
 }): Promise<GfyResult> {
 	// --- stats file: query count (+ the per-project cost paths the hook recorded) ---
 	let queries = Math.max(0, Math.floor(opts.fallbackQueries || 0));
+	let todayQueries = 0; // only the hook's day buckets carry this; manual fallbacks have no "today"
 	let statsCostPaths: string[] = [];
 	if (opts.statsPath) {
 		try {
 			const raw = await readFile(expandHome(opts.statsPath), "utf8");
-			const j = JSON.parse(raw) as { queries?: unknown; costPath?: unknown; costPaths?: unknown };
+			const j = JSON.parse(raw) as {
+				queries?: unknown;
+				costPath?: unknown;
+				costPaths?: unknown;
+				daily?: Record<string, unknown>;
+			};
 			if (typeof j.queries === "number" && Number.isFinite(j.queries)) {
 				queries = Math.max(0, Math.floor(j.queries));
 			}
+			todayQueries = Math.max(0, Math.floor(Number(j.daily?.[localYMD()]) || 0));
 			if (Array.isArray(j.costPaths)) {
 				statsCostPaths = j.costPaths.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
 			}
@@ -159,7 +170,19 @@ export async function readGraphify(opts: {
 
 	const pq = opts.perQuery > 0 ? opts.perQuery : 121_300;
 	const grossEst = queries * pq;
-	return { ok: true, net: grossEst - spent, grossEst, spent, queries, runs, perQuery: pq, haveCost: projects > 0, projects };
+	return {
+		ok: true,
+		net: grossEst - spent,
+		grossEst,
+		spent,
+		queries,
+		runs,
+		perQuery: pq,
+		haveCost: projects > 0,
+		projects,
+		todayQueries,
+		todaySaved: todayQueries * pq,
+	};
 }
 
 /**
@@ -178,18 +201,23 @@ export async function readCodegraph(opts: {
 	statsPath?: string;
 }): Promise<CgResult> {
 	let queries = Math.max(0, Math.floor(opts.fallbackQueries || 0));
+	let todayQueries = 0; // only the hook's day buckets carry this; manual fallbacks have no "today"
 	if (opts.statsPath) {
 		try {
-			const j = JSON.parse(await readFile(expandHome(opts.statsPath), "utf8")) as { queries?: unknown };
+			const j = JSON.parse(await readFile(expandHome(opts.statsPath), "utf8")) as {
+				queries?: unknown;
+				daily?: Record<string, unknown>;
+			};
 			if (typeof j.queries === "number" && Number.isFinite(j.queries)) {
 				queries = Math.max(0, Math.floor(j.queries));
 			}
+			todayQueries = Math.max(0, Math.floor(Number(j.daily?.[localYMD()]) || 0));
 		} catch {
 			/* missing/invalid -> manual fallback */
 		}
 	}
 	const pq = opts.perQuery > 0 ? opts.perQuery : 100_000;
-	return { ok: true, saved: queries * pq, queries, perQuery: pq };
+	return { ok: true, saved: queries * pq, queries, perQuery: pq, todayQueries, todaySaved: todayQueries * pq };
 }
 
 /** Read one Graphify cost.json and return its spend + build-run count. */

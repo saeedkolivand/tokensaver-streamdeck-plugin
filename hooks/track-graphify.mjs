@@ -7,10 +7,13 @@
 //
 //   ~/.tokensaver/graphify.json  ->  {
 //     "queries": N,                              // global total across all projects
+//     "daily": { "YYYY-MM-DD": N },              // same queries bucketed by local day (for "today")
 //     "costPaths": [".../a/graphify-out/cost.json", ".../b/graphify-out/cost.json"],
 //     "costPath": ".../last/graphify-out/cost.json",  // last project (kept for back-compat)
 //     "updatedAt": ...
 //   }
+//
+// The day buckets only start once this updated hook is installed.
 //
 // `costPaths` accumulates one entry per project so the plugin can sum the real build cost across
 // ALL projects you query (true multi-project aggregation). Entries are deduped case- and
@@ -52,6 +55,13 @@ try {
 		const n = Number.isFinite(data.queries) ? Math.max(0, Math.floor(data.queries)) : 0;
 		data.queries = n + 1;
 
+		// Per-day bucket so the plugin can show today's Graphify estimate. Keyed by LOCAL date
+		// (YYYY-MM-DD) to match the plugin's reader; prune to the most recent ~70 days.
+		const ymd = localYMD();
+		data.daily = data.daily && typeof data.daily === "object" ? data.daily : {};
+		data.daily[ymd] = (Number(data.daily[ymd]) || 0) + 1;
+		data.daily = prune(data.daily, 70);
+
 		// Accumulate this project's cost.json so the plugin can sum spend across ALL projects.
 		// Store clean forward-slash absolute paths; dedupe by a key that is case-insensitive only on
 		// Windows (macOS/Linux filesystems can be case-sensitive).
@@ -77,6 +87,21 @@ try {
 	}
 } catch {
 	/* never block a tool call */
+}
+
+/** Local calendar date as YYYY-MM-DD (matches the plugin's reader and RTK's `daily[].date`). */
+function localYMD(d = new Date()) {
+	const pad = (n) => String(n).padStart(2, "0");
+	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** Keep only the most recent `keep` day buckets so the map can't grow without bound. */
+function prune(daily, keep) {
+	const keys = Object.keys(daily).sort();
+	if (keys.length <= keep) return daily;
+	const out = {};
+	for (const k of keys.slice(-keep)) out[k] = daily[k];
+	return out;
 }
 
 process.exit(0);

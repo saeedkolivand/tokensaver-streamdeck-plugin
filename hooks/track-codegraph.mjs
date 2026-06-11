@@ -9,7 +9,11 @@
 //
 // On every real lookup it increments the query counter the plugin reads:
 //
-//   ~/.tokensaver/codegraph.json  ->  { "queries": N, "updatedAt": ... }
+//   ~/.tokensaver/codegraph.json  ->  { "queries": N, "daily": { "YYYY-MM-DD": N }, "updatedAt": ... }
+//
+// `queries` is the lifetime total; `daily` buckets the same lookups by local calendar day so the
+// plugin can show today's CodeGraph estimate. (The day buckets only start once this updated hook is
+// installed.)
 //
 // CodeGraph builds its index 100% locally (no LLM/API cost) and records no savings of its own, so the
 // plugin's CodeGraph readout is a pure realized estimate: queries × tokens/query.
@@ -59,11 +63,34 @@ try {
 
 		const n = Number.isFinite(data.queries) ? Math.max(0, Math.floor(data.queries)) : 0;
 		data.queries = n + 1;
+
+		// Per-day bucket so the plugin can show today's CodeGraph estimate. Keyed by LOCAL date
+		// (YYYY-MM-DD) to match the plugin's reader; prune to the most recent ~70 days.
+		const ymd = localYMD();
+		data.daily = data.daily && typeof data.daily === "object" ? data.daily : {};
+		data.daily[ymd] = (Number(data.daily[ymd]) || 0) + 1;
+		data.daily = prune(data.daily, 70);
+
 		data.updatedAt = new Date().toISOString();
 		fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
 	}
 } catch {
 	/* never block a tool call */
+}
+
+/** Local calendar date as YYYY-MM-DD (matches the plugin's reader and RTK's `daily[].date`). */
+function localYMD(d = new Date()) {
+	const pad = (n) => String(n).padStart(2, "0");
+	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** Keep only the most recent `keep` day buckets so the map can't grow without bound. */
+function prune(daily, keep) {
+	const keys = Object.keys(daily).sort();
+	if (keys.length <= keep) return daily;
+	const out = {};
+	for (const k of keys.slice(-keep)) out[k] = daily[k];
+	return out;
 }
 
 process.exit(0);

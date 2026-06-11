@@ -14,7 +14,10 @@
 				<option value="graphify">Graphify (estimate)</option>
 				<option value="codegraph">CodeGraph (estimate)</option>
 				<option value="total">Total (RTK + Graphify + CodeGraph)</option>
-				<option value="today">Today (measured)</option>
+				<option value="today">Today — RTK (measured)</option>
+				<option value="gfytoday">Today — Graphify (≈)</option>
+				<option value="cgtoday">Today — CodeGraph (≈)</option>
+				<option value="todaytotal">Today — total (RTK + Graphify + CodeGraph)</option>
 				<option value="week">This week (measured)</option>
 				<option value="month">This month (measured)</option>
 				<option value="money">Money saved (≈)</option>
@@ -102,6 +105,13 @@
 				<b>Total</b> and <b>Money</b> blend measured RTK with the Graphify and CodeGraph estimates, so
 				they're marked <code>≈</code>. <b>Money</b> = saved tokens &times; <i>$ per 1M tokens</i>
 				(default $3).
+			</p>
+			<p style="font-size: 9pt; opacity: 0.8; line-height: 1.4">
+				<b>The per-source Today readouts</b> (<b>Today — Graphify</b>, <b>Today — CodeGraph</b>, and
+				<b>Today — total</b>) need the <b>updated</b> hooks: they bucket each query by day in the stats
+				files, so today's count only starts accumulating once you redeploy the latest
+				<code>track-graphify</code> / <code>track-codegraph</code>. <b>Today — RTK</b> comes straight from
+				RTK's own ledger and is unaffected.
 			</p>
 		</details>
 	</body>

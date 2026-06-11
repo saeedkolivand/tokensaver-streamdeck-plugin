@@ -3,14 +3,15 @@
 A single Stream Deck key that shows how many AI-coding tokens you've saved with
 [**RTK** (Rust Token Killer)](https://www.rtk-ai.app/), [**Graphify**](https://graphify.net/), and
 [**CodeGraph**](https://www.npmjs.com/package/@colbymchenry/codegraph) —
-plus today / this week / this month and the dollar value. Tap to cycle the readouts, or pin a key to one.
+plus per-source today figures, this week / this month, and the dollar value. Tap to cycle the readouts,
+or pin a key to one.
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 ![Platforms](https://img.shields.io/badge/run%20on-macOS%20%7C%20Windows-blue.svg)
 ![Stream Deck](https://img.shields.io/badge/Stream%20Deck-6.5%2B-black.svg)
 ![Node](https://img.shields.io/badge/build%20with-Node%2020%2B-339933.svg)
 
-![Preview of the key readouts: RTK, Graphify, CodeGraph, Total, Today, Week, Month, and Money](docs/preview.png)
+![Preview of the key readouts: RTK, Graphify, CodeGraph, Total, Today, Graphify today, CodeGraph today, Today total, Week, Month, and Money](docs/preview.png)
 
 ---
 
@@ -37,7 +38,7 @@ plus today / this week / this month and the dollar value. Tap to cycle the reado
 
 ## What it shows
 
-Tap the key to cycle eight readouts (or pin one in settings):
+Tap the key to cycle eleven readouts (or pin one in settings):
 
 | Readout | Colour | Source | Trust |
 | --- | --- | --- | --- |
@@ -46,9 +47,16 @@ Tap the key to cycle eight readouts (or pin one in settings):
 | **CODEGRAPH** | lime | `queries × tokens/query` (100% local — counted per lookup) | **estimate** (`≈`) |
 | **TOTAL** | blue | RTK + Graphify net + CodeGraph | **approximate** (`≈`) |
 | **TODAY** | violet | RTK `daily[]` for the current day | **measured** |
+| **GFY TODAY** | amber | today's Graphify queries × tokens/query (gross) | **estimate** (`≈`) |
+| **CG TODAY** | lime | today's CodeGraph lookups × tokens/query | **estimate** (`≈`) |
+| **TODAY ALL** | indigo | RTK today + Graphify today + CodeGraph today | **approximate** (`≈`) |
 | **WEEK** | pink | RTK `weekly[]` for the current week | **measured** |
 | **MONTH** | sky | RTK `monthly[]` for the current month | **measured** |
 | **MONEY** | gold | saved tokens × `$ per 1M tokens` | **approximate** (`≈`) |
+
+The per-source **today** readouts read day buckets the tracking hooks write into the stats files, so
+they only start counting once you've installed the latest `track-graphify` / `track-codegraph`
+(below). **TODAY** (RTK) comes straight from RTK's own ledger and needs no hook.
 
 Place the action on several keys, each pinned to a different readout, to see them all at once.
 
@@ -157,7 +165,7 @@ Select the key, then open the property inspector:
 
 | Field | What it does |
 | --- | --- |
-| **Mode** | `Cycle on tap` (default), or pin to RTK / Graphify / CodeGraph / Total / Today / Week / Month / Money. |
+| **Mode** | `Cycle on tap` (default), or pin to RTK / Graphify / CodeGraph / Total / Today / Today–Graphify / Today–CodeGraph / Today–total / Week / Month / Money. |
 | **RTK command** | Base RTK invocation (default `rtk gain`); the plugin appends `--all --format json`. Point this at a full path if `rtk` isn't on the Stream Deck app's `PATH`. |
 | **Refresh (sec)** | Poll interval, 5–300 (default 30). |
 | **$ per 1M tokens** | Rate used for the Money readout (default `3`). |
@@ -303,7 +311,8 @@ used CodeGraph at least once.)
 
 ## Modes & layout
 
-- **Cycle on tap** — each press advances RTK → Graphify → CodeGraph → Total → Today → Week → Month → Money.
+- **Cycle on tap** — each press advances RTK → Graphify → CodeGraph → Total → Today → Graphify today →
+  CodeGraph today → Today total → Week → Month → Money.
 - **Pinned** — lock the key to one readout; a press just forces a refresh.
 - **Several at once** — drop the action on several keys and pin each to a different readout.
 
@@ -342,7 +351,7 @@ external, so the installed `.sdPlugin` needs no `node_modules`.
 
 ```bash
 npm run build
-streamdeck pack com.tokensaver.dashboard.sdPlugin --version 1.0.5.0 --force
+streamdeck pack com.tokensaver.dashboard.sdPlugin --version 1.0.6.0 --force
 ```
 
 Attach the resulting `com.tokensaver.dashboard.streamDeckPlugin` to a GitHub Release.
